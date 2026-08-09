@@ -260,6 +260,7 @@ def cmd_motion(args, cfg):
         "duration": f"{seconds}s",
         "resolution": cfg["defaults"]["motion_test_resolution"],
         "generate_audio": cfg["defaults"]["motion_test_audio"],
+        "negative_prompt": args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
     }
 
     record = {
@@ -318,12 +319,15 @@ def cmd_final(args, cfg):
             "Nothing was spent. Re-confirm the real number."
         )
 
+    audio = cfg["defaults"]["final_audio"] if args.audio is None else args.audio
+
     payload = {
         "prompt": args.motion,
         "image_url": resolve_image(args.start_frame),
         "duration": f"{args.seconds}s",
         "resolution": args.resolution or cfg["defaults"]["final_resolution"],
-        "generate_audio": bool(args.audio),
+        "generate_audio": audio,
+        "negative_prompt": args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
     }
 
     record = {
@@ -476,6 +480,7 @@ def main():
     p.add_argument("--start-frame", required=True, help="approved still URL or path")
     p.add_argument("--motion", required=True)
     p.add_argument("--seconds", type=int)
+    p.add_argument("--negative", help="override the default negative prompt")
     p.add_argument("--model")
     p.add_argument("--out", default=str(WORK / "tests"))
     p.set_defaults(func=cmd_motion)
@@ -492,7 +497,9 @@ def main():
     p.add_argument("--motion", required=True)
     p.add_argument("--seconds", type=int, required=True)
     p.add_argument("--resolution")
-    p.add_argument("--audio", action="store_true")
+    p.add_argument("--audio", action=argparse.BooleanOptionalAction, default=None,
+                    help="generate synced audio (default: on, from config defaults.final_audio)")
+    p.add_argument("--negative", help="override the default negative prompt")
     p.add_argument("--model")
     p.add_argument("--i-approve-cost", type=float, default=None)
     p.add_argument("--out", default=str(WORK / "clips"))

@@ -19,7 +19,9 @@
     "motion_test_duration":   6,
     "motion_test_audio":      false,
     "final_resolution":       "1080p",
-    "aspect_ratio":           "16:9"
+    "final_audio":            true,
+    "aspect_ratio":           "16:9",
+    "negative_prompt": "slow motion unless explicitly requested, morphing, warping, melting, flickering, frame stutter, unnatural physics, ragdoll glitches, extra limbs, distorted or drifting face, identity change, low detail, compression artifacts, motion smear on the face"
   },
 
   "budget": {
