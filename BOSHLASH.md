@@ -16,7 +16,57 @@ Bu faylda **faqat siz qiladigan ishlar** bor. Qolgan hamma narsani men qilaman.
 
 ---
 
-## 🔑 Sizdan kerak bo'lgan yagona narsa: fal.ai kaliti
+## 🚧 To'siq: fal.ai bloklangan
+
+Bu bulutli muhitdan fal.ai domenlariga chiqib bo'lmaydi — tarmoq siyosati
+ularni bloklagan (403). Kalit aybdor emas; so'rov domengacha yetib bormaydi.
+
+Bloklangan domenlar:
+`fal.ai`, `fal.run`, `queue.fal.run`, `rest.alpha.fal.ai`, `fal.media`, `v3.fal.media`
+
+### Buni siz ochasiz — 8 ta bosish
+
+1. **https://claude.ai/code** ni oching
+2. Xabar yozadigan katakning **ustidagi qatorda** bulut belgisini toping —
+   unda muhit nomi yozilgan (masalan `Default`). **Bosing.**
+3. Ro'yxatda o'sha muhit ustiga sichqonchani olib boring → o'ng tomonda
+   **tishli g'ildirak** (sozlama) belgisi chiqadi. **Bosing.**
+4. Ochilgan oynada **Network access** degan joyni toping →
+   **Custom** ni tanlang.
+5. **Allowed domains** katagiga quyidagini **to'liq** joylashtiring
+   (har biri alohida qatorda):
+
+```
+fal.ai
+*.fal.ai
+fal.run
+*.fal.run
+fal.media
+*.fal.media
+```
+
+6. Pastdagi **"Also include default list of common package managers"**
+   katagiga **belgi qo'ying** ✅ (bu muhim — aks holda GitHub va boshqa
+   kerakli narsalar ishlamay qoladi)
+7. Xuddi shu oynada **Environment variables** katagini toping va
+   quyidagi qatorni qo'shing:
+
+```
+FAL_KEY=kalitingiz-shu-yerga
+```
+
+8. **Save** / **Update environment** tugmasini bosing
+
+### ⚠️ Keyin nima qilish kerak
+
+O'zgarish **faqat yangi sessiyalarga** ta'sir qiladi. Hozirgi suhbat eski
+qoida bilan ishlayapti — shuning uchun **yangi sessiya oching** (shu
+repozitoriya bilan). Men qilgan ishlarning hammasi git'da saqlangan,
+yangi sessiyada davom ettiramiz.
+
+---
+
+## 🔑 fal.ai kaliti
 
 ### 1-qadam. Kalit oling
 
