@@ -1,0 +1,14 @@
+# secrets
+.env
+
+# generated media and logs — never commit these
+work/
+*.mp4
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+__pycache__/
+*.pyc

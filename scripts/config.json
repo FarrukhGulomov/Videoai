@@ -1,0 +1,28 @@
+{
+  "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
+
+  "models": {
+    "still":        "fal-ai/nano-banana-pro",
+    "still_edit":   "fal-ai/nano-banana-pro/edit",
+    "motion_test":  "fal-ai/veo3.1/lite/image-to-video",
+    "final_take":   "fal-ai/veo3.1/image-to-video"
+  },
+
+  "rates": {
+    "still_per_image_usd":       0.15,
+    "motion_test_per_second_usd": 0.03,
+    "final_take_per_second_usd":  0.15
+  },
+
+  "defaults": {
+    "motion_test_resolution": "720p",
+    "motion_test_duration":   5,
+    "motion_test_audio":      false,
+    "final_resolution":       "1080p",
+    "aspect_ratio":           "16:9"
+  },
+
+  "budget": {
+    "stop_at_pct": 80
+  }
+}
