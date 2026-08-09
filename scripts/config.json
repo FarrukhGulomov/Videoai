@@ -16,7 +16,7 @@
 
   "defaults": {
     "motion_test_resolution": "720p",
-    "motion_test_duration":   5,
+    "motion_test_duration":   6,
     "motion_test_audio":      false,
     "final_resolution":       "1080p",
     "aspect_ratio":           "16:9"
