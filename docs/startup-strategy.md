@@ -122,23 +122,38 @@ qo'shimchalar:
 
 ---
 
-## 6. Ochiq savollar / xavflar
+## 6. Alohida startap sifatida — ijobiy va salbiy taraflar
 
-- **Kontent nazorati.** fal/Veo'ning o'z content-policy filtri bor (biz bugun
-  buni ko'rdik — bir xil matn Lite'da o'tdi, to'liq modelda rad etildi).
-  Ko'p foydalanuvchili tizimda bu tez-tez uchraydi — foydalanuvchiga tushunarli
-  xato xabari va qayta urinish oqimi kerak bo'ladi.
-- **Yuz o'xshashligi barqarorligi.** Bugungi tajriba shuni ko'rsatdi: bitta
-  "still" generatsiyasi ba'zan boshqa odamga o'xshab qoladi. Ko'p
-  foydalanuvchili mahsulotda bu **sifat nazorati muammosi** — yechim: har doim
-  3+ variant yasab, avtomatik yuz-solishtirish (face embedding orqali) eng
-  yaqinini tanlash.
-- **Xarajat nazorati.** Har bir foydalanuvchi uchun byudjet-limit va
-  "rung" tizimi (arzon test → ruxsat → qimmat yakuniy) **majburiy** bo'lishi
-  kerak — aks holda bitta foydalanuvchi ko'p pul "yeb qo'yishi" mumkin.
-- **Huquqiy tomon.** Foydalanuvchi boshqa birovning yuzini yuklab, video
-  yasashi mumkinmi? Bu — deepfake bilan bog'liq huquqiy xavf. MVP uchun
-  "faqat o'z rasmingiz" siyosatini kiritish tavsiya etiladi.
+### 6.1 Ijobiy taraflar
+
+| # | Nima | Nega muhim |
+|---|---|---|
+| 1 | **Aniq, tor bozor bo'shlig'i** | O'zbek/Markaziy Osiyo tilida ovoz + mahalliy to'lov (Payme/Click) bilan ishlaydigan AI-video mahsuloti amalda yo'q. Higgsfield/Runway/Pika bu segmentga maxsus mo'ljallanmagan. |
+| 2 | **Texnik asos allaqachon isbotlangan** | Bugungi sessiyada `factory.py`'ning rung-1/2/3 tizimi, model-router (Kling/Veo/Seedance), narx-nazorat mexanizmi haqiqiy pul bilan sinovdan o'tdi — noldan boshlash emas. |
+| 3 | **Past boshlang'ich kapital** | O'z video-modelingizni o'qitish shart emas — fal.ai, Aisha AI kabi tayyor API'lar ustiga qurilyapti. Infratuzilma xarajati deyarli yo'q. |
+| 4 | **Kengayish yo'nalishlari ko'p** | Bitta "video generator"dan boshlab — reklama studiyasi, ijtimoiy tarmoq kontent-fabrikasi, ta'lim videolari, korporativ taqdimotlarga kengaytirish mumkin. |
+
+### 6.2 Salbiy taraflar / xavflar
+
+| # | Xavf | Ta'siri | Yumshatish yo'li |
+|---|---|---|---|
+| 1 | **Marja provayderga bog'liq** | fal.ai/Kling/Veo narxni istalgan payt oshirishi mumkin — sizning marjangiz ularning qo'lida. Bugun aynan shuni ko'rdik: $10 taxminan bitta 20 soniyalik videoga yetdi. | Narxni kredit sifatida oldindan qulflab sotmang — "taxminiy narx" ko'rsating, real vaqtda hisoblang, yoki marjani keng qoldiring (2-3x). |
+| 2 | **Vendor lock-in** | Butun biznes fal.ai/Higgsfield kabi uchinchi tomon API'siga tayanadi. Ular narx siyosatini, kirish shartlarini, hatto API'ni butunlay yopishi mumkin. | Model-router allaqachon ko'p-provayderli (Kling/Veo/Seedance) — shu tamoyilni davom ettirib, bitta provayderga qattiq bog'lanib qolmaslik. |
+| 3 | **Sifat barqarorligi — hal qilinmagan muammo** | Bugun ko'p marta ko'rdik: yuz o'xshamay qoladi, harakat sun'iy chiqadi. Bu — butun AI-video sohasining hozirgi chegarasi, faqat sizning kodingiz emas. Ko'p foydalanuvchili mahsulotda bu **shikoyat va pul qaytarish** oqimiga aylanadi. | Har doim 3+ variant + avtomatik yuz-solishtirish, "sizga yoqmasa qayta ishlaymiz" siyosati, foydalanuvchini oldindan ogohlantirish. |
+| 4 | **Huquqiy va obro' xavfi (deepfake)** | Foydalanuvchi boshqa birovning yuzini yuklab video yasashi mumkinmi? O'zbekistonda bu bo'yicha aniq qonunchilik hali yo'q — noaniqlik o'zi xavf. | MVP uchun "faqat o'z rasmingiz" siyosati + yuklashda soddaroq tasdiqlash (masalan, selfie bilan tekshirish). |
+| 5 | **Kuchli raqobat** | Higgsfield, Runway, Pika, Kling'ning o'z ilovasi, HeyGen — bularning barchasida katta jamoa va investitsiya bor. O'zbek tili ustunligi vaqtinchalik bo'lishi mumkin (ular ham qo'shishi mumkin). | Faqat tilda emas, **tezlik va narxda** ustunlik qilish — mahalliy to'lov, mahalliy qo'llab-quvvatlash, past narx. |
+| 6 | **Pul oqimi xavfi (kredit oldindan sotish)** | Foydalanuvchi kredit sotib olgandan keyin fal/Kling narxi oshib ketsa — oldin sotilgan kreditlar zarar keltiradi (narx-arbitraj xavfi). | Kreditni "taxminiy" deb belgilang, katta narx o'zgarishida avtomatik qayta hisoblash mexanizmi kiriting. |
+| 7 | **Operatsion yuk ortadi** | Bitta-foydalanuvchi skriptdan farqli — ko'p foydalanuvchili tizim endi: content-moderatsiya, xato holatlari, navbat boshqaruvi, mijozlarga yordam talab qiladi. | Bosqichma-bosqich o'sish (roadmap'dagi kabi) — avval o'zingiz sinab, keyin oz sonli "yopiq beta" foydalanuvchilar bilan. |
+| 8 | **Vaqt va e'tibor narxi** | MVP ham bir necha hafta talab qiladi, useful foydalanuvchi bazasi yig'ish esa oylar. Bu joriy loyihalaringizdan vaqt/e'tibor olib qo'yadi. | Kichik, aniq maqsad bilan boshlash (1-bosqich, 1 foydalanuvchi — siz), katta sarmoya kiritmasdan sinash. |
+
+### 6.3 Qisqa xulosa
+
+Eng katta ikkita xavf — **(1) marja/narx nazorati sizning qo'lingizda emas** va
+**(2) sifat barqarorligi hali AI-video sohasining o'zida hal qilinmagan
+muammo**. Ikkalasi ham "qurilish" bilan emas, balki **biznes-model va
+kutish boshqaruvi** bilan yumshatiladi — foydalanuvchidan haqiqiy narxni
+yashirmaslik, va "kafolatlangan mukammal video" emas, "arzon va tez sinov"
+sifatida taqdim etish.
 
 ---
 
