@@ -194,6 +194,9 @@ def resolve_image(ref):
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None):
     """Veo, Kling, and Seedance each take a differently-shaped payload. Branch on model family."""
+    if end_frame and "kling" not in model and "seedance" not in model:
+        die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance")
+
     image_url = resolve_image(start_frame)
     end_url = resolve_image(end_frame) if end_frame else None
     if "kling" in model:
@@ -224,8 +227,6 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
         if negative_prompt:
             payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
     else:
-        if end_url:
-            die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance")
         payload = {
             "prompt": prompt,
             "image_url": image_url,
@@ -255,8 +256,13 @@ def first_url(result, *keys):
 
 def cmd_still(args, cfg):
     """Rung 1 — the cheap still. Face is locked by the reference images."""
+    refs = list(args.ref or [])
+    canonical = cfg.get("identity", {}).get("canonical_face_ref")
+    if canonical and not args.no_canonical and canonical not in refs:
+        refs.insert(0, canonical)
+
     model = args.model or (
-        cfg["models"]["still_edit"] if args.ref else cfg["models"]["still"]
+        cfg["models"]["still_edit"] if refs else cfg["models"]["still"]
     )
     rate = cfg["rates"]["still_per_image_usd"]
 
@@ -265,8 +271,8 @@ def cmd_still(args, cfg):
         "num_images": args.count,
         "aspect_ratio": args.aspect or cfg["defaults"]["aspect_ratio"],
     }
-    if args.ref:
-        payload["image_urls"] = [resolve_image(r) for r in args.ref]
+    if refs:
+        payload["image_urls"] = [resolve_image(r) for r in refs]
 
     record = {
         "scene_id": args.scene_id, "rung": 1, "model": model,
@@ -293,11 +299,29 @@ def cmd_still(args, cfg):
     emit(record)
 
 
+def motion_test_rate(args, cfg):
+    """Rung 2 isn't approval-gated, so an unknown --model degrades to a
+    warning instead of refusing to run -- but it still tries the final-take
+    rate table first so overriding to Kling/Seedance for a test doesn't
+    silently under-report cost against the Veo Lite default."""
+    model = args.model or cfg["models"]["motion_test"]
+    if model == cfg["models"]["motion_test"]:
+        return model, cfg["rates"]["motion_test_per_second_usd"]
+    rate = cfg["rates"]["final_take_per_second_usd_by_model"].get(model)
+    if rate is None:
+        rate = cfg["rates"]["motion_test_per_second_usd"]
+        print(
+            f"  (no rate on file for '{model}' -- logging cost at the Lite "
+            f"rate ${rate}/s, which may not match what fal actually charges)",
+            file=sys.stderr,
+        )
+    return model, rate
+
+
 def cmd_motion(args, cfg):
     """Rung 2 — the Lite motion test. Start frame is mandatory."""
-    model = args.model or cfg["models"]["motion_test"]
+    model, rate = motion_test_rate(args, cfg)
     seconds = args.seconds or cfg["defaults"]["motion_test_duration"]
-    rate = cfg["rates"]["motion_test_per_second_usd"]
     cost = round(rate * seconds, 4)
 
     payload = build_video_payload(
@@ -353,7 +377,7 @@ def cmd_cost(args, cfg):
         emit({"rung": 1, "images": args.count or 1, "cost_usd": round(total, 4)})
         return
     if args.rung == 2:
-        rate = cfg["rates"]["motion_test_per_second_usd"]
+        _, rate = motion_test_rate(args, cfg)
     else:
         _, rate = final_take_rate(args, cfg)
     total = round(rate * args.seconds, 4)
@@ -492,12 +516,47 @@ def cmd_polish(args, cfg):
     })
 
 
+def has_audio_stream(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+         "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    return bool(out.stdout.strip())
+
+
 def cmd_assemble(args, cfg):
     """Stitch approved clips in filename order, then lay the voiceover over them."""
     clips_dir = pathlib.Path(args.clips)
     clips = sorted(p for p in clips_dir.glob("*.mp4") if p.is_file())
     if not clips:
         die(f"no .mp4 files in {clips_dir}")
+
+    # The concat demuxer silently drops audio from every clip if even one clip
+    # in the list has a different stream layout (e.g. one clip has no audio
+    # track). Normalize first: any clip missing audio gets a silent track
+    # muxed in, so every clip concat sees has the same video+audio layout.
+    audio_flags = [has_audio_stream(p) for p in clips]
+    if any(audio_flags) and not all(audio_flags):
+        norm_dir = pathlib.Path(args.out).parent / "_normalized"
+        norm_dir.mkdir(parents=True, exist_ok=True)
+        normalized = []
+        for clip, has_audio in zip(clips, audio_flags):
+            if has_audio:
+                normalized.append(clip)
+                continue
+            silent = norm_dir / clip.name
+            res = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(clip),
+                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                 "-c:v", "copy", "-c:a", "aac", "-shortest", str(silent)],
+                capture_output=True, text=True, check=False,
+            )
+            if res.returncode != 0:
+                die(f"ffmpeg silent-audio mux failed for {clip}:\n{res.stderr[-1500:]}")
+            normalized.append(silent)
+            print(f"  {clip.name} had no audio track -- added silence so concat doesn't drop everyone else's", file=sys.stderr)
+        clips = normalized
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -568,6 +627,8 @@ def main():
     p.add_argument("--scene-id", required=True)
     p.add_argument("--prompt", required=True)
     p.add_argument("--ref", action="append", help="reference image URL or local path (repeatable)")
+    p.add_argument("--no-canonical", action="store_true",
+                    help="don't auto-prepend identity.canonical_face_ref from config.json")
     p.add_argument("--count", type=int, default=1)
     p.add_argument("--aspect")
     p.add_argument("--model")
