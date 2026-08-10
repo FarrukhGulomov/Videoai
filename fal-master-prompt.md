@@ -95,6 +95,23 @@ is how people spend rung-3 money re-testing things that were never broken.
 At rung 3, cost is stated (`duration × rate`) and approved **before** the call,
 one scene at a time. Never batched.
 
+### When rung 2 can be skipped
+
+Rung 2 exists because a still says nothing about how the *video* model will
+animate it — pacing, direction, artifacts, and identity drift under motion
+are failure modes a static image cannot show. Skipping straight to rung 3
+is only cheaper if the shot is simple enough that motion is very unlikely to
+surprise you; otherwise a failed rung-3 attempt costs ~5x more to redo than
+a failed rung-2 one did.
+
+| Shot type | Rung 2 required? |
+|---|---|
+| Simple, low-risk motion: calm walking, small head turn, static hold, slow push/pull | **Skip** — go still → final directly |
+| Complex motion: fights, impacts, falls, fast camera moves, multi-beat action | **Mandatory** — a rung-3 attempt without a passing rung-2 test is not allowed |
+
+When in doubt, treat the shot as complex. This is a per-shot call, made and
+stated each time, not a blanket rule to stop applying judgment.
+
 ---
 
 ## 5. Model choice (rung 3) — pick per shot, don't default blindly
