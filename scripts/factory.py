@@ -503,6 +503,46 @@ def cmd_probe(args, cfg):
     })
 
 
+def cmd_frames(args, cfg):
+    """Pull N evenly-spaced frames from a clip for identity/artifact review.
+    A still-only face check can't catch drift that happens mid-motion --
+    this is what makes checking the rendered output possible at all."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", args.file],
+        capture_output=True, text=True, check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        die(f"ffprobe failed to read duration:\n{probe.stderr[:600]}")
+    duration = float(probe.stdout.strip())
+
+    out_dir = pathlib.Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = args.count
+    # Evenly spaced, avoiding the very first/last frame where encoders often
+    # have artifacts unrelated to the actual generation.
+    timestamps = [duration * (i + 1) / (n + 1) for i in range(n)]
+
+    paths = []
+    for i, t in enumerate(timestamps, start=1):
+        frame_path = out_dir / f"frame_{i}_{t:.2f}s.jpg"
+        res = subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{t:.3f}", "-i", args.file,
+             "-frames:v", "1", "-q:v", "2", str(frame_path)],
+            capture_output=True, text=True, check=False,
+        )
+        if res.returncode != 0:
+            die(f"ffmpeg frame extraction failed at {t:.2f}s:\n{res.stderr[-800:]}")
+        paths.append(str(frame_path))
+
+    emit({
+        "file": args.file,
+        "duration_seconds": round(duration, 2),
+        "frames": paths,
+        "cost_usd": 0,
+    })
+
+
 def cmd_polish(args, cfg):
     """Free, local post-processing pass: color grade, optional motion smoothing
     and upscale/sharpen. No API calls, no cost -- just ffmpeg."""
@@ -702,6 +742,12 @@ def main():
     p = sub.add_parser("probe", help="inspect a media file")
     p.add_argument("--file", required=True)
     p.set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("frames", help="extract N evenly-spaced frames for identity/artifact review")
+    p.add_argument("--file", required=True)
+    p.add_argument("--count", type=int, default=3)
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_frames)
 
     p = sub.add_parser("polish", help="free local post-process: color grade / smooth motion / upscale")
     p.add_argument("--file", required=True)

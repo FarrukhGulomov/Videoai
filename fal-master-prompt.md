@@ -143,6 +143,28 @@ a failed rung-2 one did.
 When in doubt, treat the shot as complex. This is a per-shot call, made and
 stated each time, not a blanket rule to stop applying judgment.
 
+### Checking the rendered output, not just the start frame
+
+A rung-1 face check only proves the *still* matches. Motion can still drift
+the face mid-clip — this project hit that exact failure today (an approved
+still, then a rung-3 take where the face read as thinner than the
+reference). The still-only check cannot catch this because the drift
+doesn't exist yet at that point.
+
+After every rung-2 and rung-3 output, before presenting it:
+
+```
+factory.py frames --file <clip> --count 3 --out work/qc/<scene_id>
+```
+
+Read the extracted frames alongside `identity.canonical_face_ref`, same
+judgment as the rung-1 selection (2.1): face shape, nose, jaw, eyebrows,
+not lighting or resolution (rung 2 still ignores those per above). If a
+rung-3 final drifts, that's a failed take — say so plainly and re-run
+rather than presenting a mismatched result and letting the user catch it.
+This costs nothing (`cmd_frames` is pure ffmpeg) and takes seconds, so
+there's no reason to skip it.
+
 ---
 
 ## 5. Model choice (rung 3) — pick per shot, don't default blindly
