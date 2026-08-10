@@ -97,16 +97,29 @@ one scene at a time. Never batched.
 
 ---
 
-## 5. Model choice (rung 3)
+## 5. Model choice (rung 3) — pick per shot, don't default blindly
 
-`final_take` defaults to **Kling 3.0 Standard**, not Veo. This is not a
-guess — it is verified against the user's own Higgsfield generation history
-(`mcp__Higsfield__show_generations`): every clip they approved was made with
-`model=kling3_0, mode=std, cfg_scale=0.5, sound=on`, and fal's Kling v3
-standard (audio on, $0.126/s) is *cheaper* than Veo 3.1 full ($0.15/s) too.
-Do not re-litigate this per shot — use Kling by default. Only fall back to
-Veo (`--model fal-ai/veo3.1/image-to-video`) if a specific shot demonstrably
-fails on Kling after a fair retry, and log why in the ledger.
+Three models are wired into `config.json`. Pick per shot based on what the
+shot actually needs, then say which one and why before running rung 3 — this
+is a real decision each time, not a fixed default.
+
+| Model | `--model` value | $/s (audio on) | Strongest at | Use for |
+|---|---|---|---|---|
+| **Kling 3.0 Standard** | `fal-ai/kling-video/v3/standard/image-to-video` | $0.126 | Smooth natural motion, cinematic color grading, multi-character dialogue with phoneme-level lip-sync. Proven on this user's own approved Higgsfield clips (`model=kling3_0, mode=std, cfg_scale=0.5, sound=on`). | **Default for everything** — action, fights, walking, most dialogue. Cheapest of the three. |
+| **Veo 3.1** | `fal-ai/veo3.1/image-to-video` | $0.15 | Face rendering and identity consistency specifically; reduces uncanny-valley artifacts; strong audio-driven dialogue. | Face-critical calm close-ups where Kling's result drifted from the reference face after a fair retry. |
+| **Seedance 2.0** | `bytedance/seedance-2.0/image-to-video` | $0.3024 | Best overall benchmark quality; best camera-movement precision (91% reference match); most realistic cloth/liquid/hair/particle physics. | Only a single hero/signature shot where precise camera choreography or physics simulation (explosion debris, cloth, spray) is the entire point — never the default, it's 2.4x Kling's price. |
+
+Rates live in `rates.final_take_per_second_usd_by_model`, keyed by exact fal
+model id. `cmd_cost`/`cmd_final` refuse to run for a `--model` not in that
+table rather than guess a price — add the real rate there first if a new
+model gets added.
+
+**Decision order for a new shot:** start from Kling (it is right most of the
+time and is the cheapest). Switch to Veo only if a face-critical shot's
+identity is drifting. Reach for Seedance only when the shot's success
+genuinely depends on camera-move precision or physics simulation that the
+other two have already shown they can't deliver — and say so explicitly
+before spending the extra money, same as any other rung-3 cost.
 
 ## 5.1 Prompt density (learned from the Higgsfield reference clips)
 

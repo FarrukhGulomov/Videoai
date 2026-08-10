@@ -193,7 +193,7 @@ def resolve_image(ref):
 
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg):
-    """Veo and Kling take differently-shaped payloads. Branch on the model family."""
+    """Veo, Kling, and Seedance each take a differently-shaped payload. Branch on model family."""
     image_url = resolve_image(start_frame)
     if "kling" in model:
         payload = {
@@ -204,6 +204,20 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
         }
         if cfg["defaults"].get("kling_cfg_scale") is not None:
             payload["cfg_scale"] = cfg["defaults"]["kling_cfg_scale"]
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+    elif "seedance" in model:
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": seconds,
+            "resolution": resolution,
+            "generate_audio": audio,
+        }
+        # Seedance has no negative_prompt param -- fold the standard negatives
+        # into the positive prompt instead of silently dropping them.
+        if negative_prompt:
+            payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
     else:
         payload = {
             "prompt": prompt,
@@ -212,8 +226,8 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
             "resolution": resolution,
             "generate_audio": audio,
         }
-    if negative_prompt:
-        payload["negative_prompt"] = negative_prompt
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
     return payload
 
 
@@ -311,13 +325,29 @@ def cmd_motion(args, cfg):
     emit(record)
 
 
+def final_take_rate(args, cfg):
+    """Look up the per-second rate for whichever final-take model is in play.
+    Refuses to guess a price for a model that isn't in the rate table."""
+    model = args.model or cfg["models"]["final_take"]
+    rate = cfg["rates"]["final_take_per_second_usd_by_model"].get(model)
+    if rate is None:
+        die(
+            f"no rate on file for model '{model}'.\n"
+            f"  Add its real per-second price to rates.final_take_per_second_usd_by_model "
+            f"in config.json (check fal.ai/pricing) before running rung 3 with it."
+        )
+    return model, rate
+
+
 def cmd_cost(args, cfg):
-    key = {2: "motion_test_per_second_usd", 3: "final_take_per_second_usd"}.get(args.rung)
     if args.rung == 1:
         total = cfg["rates"]["still_per_image_usd"] * (args.count or 1)
         emit({"rung": 1, "images": args.count or 1, "cost_usd": round(total, 4)})
         return
-    rate = cfg["rates"][key]
+    if args.rung == 2:
+        rate = cfg["rates"]["motion_test_per_second_usd"]
+    else:
+        _, rate = final_take_rate(args, cfg)
     total = round(rate * args.seconds, 4)
     emit({
         "rung": args.rung, "seconds": args.seconds,
@@ -328,8 +358,7 @@ def cmd_cost(args, cfg):
 
 def cmd_final(args, cfg):
     """Rung 3 — real money. Refuses to run unless the stated cost was approved."""
-    model = args.model or cfg["models"]["final_take"]
-    rate = cfg["rates"]["final_take_per_second_usd"]
+    model, rate = final_take_rate(args, cfg)
     cost = round(rate * args.seconds, 4)
 
     if args.i_approve_cost is None:
@@ -512,6 +541,7 @@ def main():
     p.add_argument("--rung", type=int, required=True, choices=[1, 2, 3])
     p.add_argument("--seconds", type=int, default=5)
     p.add_argument("--count", type=int, default=1)
+    p.add_argument("--model", help="rung 3 only: which final-take model, to price it correctly")
     p.set_defaults(func=cmd_cost)
 
     p = sub.add_parser("final", help="rung 3 — final take (requires approved cost)")
