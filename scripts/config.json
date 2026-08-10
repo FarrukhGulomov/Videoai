@@ -1,17 +1,21 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
+  "_model_choice_note": "final_take defaults to Kling 3.0 Standard, not Veo. Verified against the user's own Higgsfield history (mcp__Higsfield__show_generations): their liked reference clips were all generated with model=kling3_0, mode=std, cfg_scale=0.5, sound=on -- and fal's Kling v3 standard (audio on, $0.126/s) is cheaper than Veo 3.1 full ($0.15/s) too. Veo stays available as an override via --model for any shot where Kling clearly underperforms.",
+
   "models": {
     "still":        "fal-ai/nano-banana-pro",
     "still_edit":   "fal-ai/nano-banana-pro/edit",
     "motion_test":  "fal-ai/veo3.1/lite/image-to-video",
-    "final_take":   "fal-ai/veo3.1/image-to-video"
+    "final_take":   "fal-ai/kling-video/v3/standard/image-to-video",
+    "final_take_alt_veo": "fal-ai/veo3.1/image-to-video"
   },
 
   "rates": {
     "still_per_image_usd":       0.15,
     "motion_test_per_second_usd": 0.03,
-    "final_take_per_second_usd":  0.15
+    "final_take_per_second_usd":  0.126,
+    "_final_take_note": "0.126 = Kling v3 standard with audio on (the default). Audio off is 0.084/s -- if you pass --no-audio, the approval check still uses 0.126 so you never approve less than what could be charged."
   },
 
   "defaults": {
@@ -21,6 +25,7 @@
     "final_resolution":       "1080p",
     "final_audio":            true,
     "aspect_ratio":           "16:9",
+    "kling_cfg_scale": 0.5,
     "negative_prompt": "slow motion unless explicitly requested, morphing, warping, melting, flickering, frame stutter, unnatural physics, ragdoll glitches, extra limbs, distorted or drifting face, identity change, low detail, compression artifacts, motion smear on the face"
   },
 

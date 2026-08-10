@@ -97,7 +97,40 @@ one scene at a time. Never batched.
 
 ---
 
-## 5. Template harvest
+## 5. Model choice (rung 3)
+
+`final_take` defaults to **Kling 3.0 Standard**, not Veo. This is not a
+guess — it is verified against the user's own Higgsfield generation history
+(`mcp__Higsfield__show_generations`): every clip they approved was made with
+`model=kling3_0, mode=std, cfg_scale=0.5, sound=on`, and fal's Kling v3
+standard (audio on, $0.126/s) is *cheaper* than Veo 3.1 full ($0.15/s) too.
+Do not re-litigate this per shot — use Kling by default. Only fall back to
+Veo (`--model fal-ai/veo3.1/image-to-video`) if a specific shot demonstrably
+fails on Kling after a fair retry, and log why in the ledger.
+
+## 5.1 Prompt density (learned from the Higgsfield reference clips)
+
+The reference prompts that produced the liked results were far denser than
+what this pipeline was writing early on. Match this density for rung-3 final
+prompts:
+
+- **Choreograph the camera explicitly**, as a sequence: "camera starts high
+  looking down... then pushes in and drops to a low three-quarter angle...
+  ending on a medium shot." Not just "push in."
+- **Repeat the identity lock as a hard sentence inside the motion prompt
+  itself**, not only in `{{CHARACTER_LOCK}}`: *"His face stays identical to
+  the first frame throughout — same features, same proportions, no
+  morphing, no re-lighting of facial structure."* This exact phrasing
+  recurs across every one of the user's approved Higgsfield clips.
+- **Name the finish**: lens (anamorphic, 35mm/50mm), grain (fine film
+  grain), palette (dusty ochre / cool blue-teal / whatever fits the scene),
+  and light falloff. This is what makes stills and video read as "shot on a
+  camera" instead of "generated."
+- **State what does NOT happen**, in-line, not just in `NEGATIVES`: "no
+  camera shake, no lens flare, no on-screen text, no modern objects" tuned
+  to the specific scene, in addition to the standard negative list.
+
+## 6. Template harvest
 
 A shot that landed in three iterations or fewer is written back to `templates`
 with its variable parts replaced:

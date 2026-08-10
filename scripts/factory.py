@@ -192,6 +192,31 @@ def resolve_image(ref):
     return fal_upload(ref)
 
 
+def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg):
+    """Veo and Kling take differently-shaped payloads. Branch on the model family."""
+    image_url = resolve_image(start_frame)
+    if "kling" in model:
+        payload = {
+            "prompt": prompt,
+            "start_image_url": image_url,
+            "duration": seconds,
+            "generate_audio": audio,
+        }
+        if cfg["defaults"].get("kling_cfg_scale") is not None:
+            payload["cfg_scale"] = cfg["defaults"]["kling_cfg_scale"]
+    else:
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": f"{seconds}s",
+            "resolution": resolution,
+            "generate_audio": audio,
+        }
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    return payload
+
+
 def first_url(result, *keys):
     """Pull the first output URL out of fal's varied response shapes."""
     for key in keys:
@@ -254,14 +279,13 @@ def cmd_motion(args, cfg):
     rate = cfg["rates"]["motion_test_per_second_usd"]
     cost = round(rate * seconds, 4)
 
-    payload = {
-        "prompt": args.motion,
-        "image_url": resolve_image(args.start_frame),
-        "duration": f"{seconds}s",
-        "resolution": cfg["defaults"]["motion_test_resolution"],
-        "generate_audio": cfg["defaults"]["motion_test_audio"],
-        "negative_prompt": args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
-    }
+    payload = build_video_payload(
+        model, args.motion, args.start_frame, seconds,
+        cfg["defaults"]["motion_test_resolution"],
+        args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
+        cfg["defaults"]["motion_test_audio"],
+        cfg,
+    )
 
     record = {
         "scene_id": args.scene_id, "rung": 2, "model": model,
@@ -321,14 +345,13 @@ def cmd_final(args, cfg):
 
     audio = cfg["defaults"]["final_audio"] if args.audio is None else args.audio
 
-    payload = {
-        "prompt": args.motion,
-        "image_url": resolve_image(args.start_frame),
-        "duration": f"{args.seconds}s",
-        "resolution": args.resolution or cfg["defaults"]["final_resolution"],
-        "generate_audio": audio,
-        "negative_prompt": args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
-    }
+    payload = build_video_payload(
+        model, args.motion, args.start_frame, args.seconds,
+        args.resolution or cfg["defaults"]["final_resolution"],
+        args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
+        audio,
+        cfg,
+    )
 
     record = {
         "scene_id": args.scene_id, "rung": 3, "model": model,
