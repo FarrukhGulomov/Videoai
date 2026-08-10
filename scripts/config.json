@@ -31,7 +31,17 @@
     "final_audio":            true,
     "aspect_ratio":           "16:9",
     "kling_cfg_scale": 0.5,
-    "negative_prompt": "slow motion unless explicitly requested, morphing, warping, melting, flickering, frame stutter, unnatural physics, ragdoll glitches, extra limbs, distorted or drifting face, identity change, low detail, compression artifacts, motion smear on the face"
+    "negative_prompt": "slow motion unless explicitly requested, morphing, warping, melting, flickering, frame stutter, unnatural physics, ragdoll glitches, extra limbs, distorted or drifting face, identity change, low detail, compression artifacts, motion smear on the face",
+    "polish": {
+      "grade_filter": "eq=contrast=1.08:saturation=1.15:gamma=0.97,curves=all='0/0 0.22/0.16 0.5/0.5 0.78/0.84 1/1',vignette=PI/6,noise=alls=5:allf=t+u",
+      "smooth_fps": 48,
+      "_note": "Free, local, ffmpeg-only -- no fal cost. Mild filmic S-curve + vignette + fine grain. smooth_fps doubles 24fps source via motion-compensated interpolation when --smooth is passed."
+    }
+  },
+
+  "identity": {
+    "canonical_face_ref": "work/stills/scene03_still1_v3.jpg",
+    "note": "The one still the user actually approved (rung-1 v3 variant, fight scene). Use this as the primary --ref for all future stills instead of raw phone photos -- it is already paid for, already confirmed to match, and a single consistent anchor image gives more consistent identity across shots than re-mixing varied selfies each time. The 6 raw phone photos in work/refs/face/ stay available as secondary --ref support if a shot needs an angle the canonical still doesn't have (e.g. profile)."
   },
 
   "budget": {

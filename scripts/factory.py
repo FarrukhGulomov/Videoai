@@ -192,9 +192,10 @@ def resolve_image(ref):
     return fal_upload(ref)
 
 
-def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg):
+def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None):
     """Veo, Kling, and Seedance each take a differently-shaped payload. Branch on model family."""
     image_url = resolve_image(start_frame)
+    end_url = resolve_image(end_frame) if end_frame else None
     if "kling" in model:
         payload = {
             "prompt": prompt,
@@ -202,6 +203,8 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
             "duration": seconds,
             "generate_audio": audio,
         }
+        if end_url:
+            payload["end_image_url"] = end_url
         if cfg["defaults"].get("kling_cfg_scale") is not None:
             payload["cfg_scale"] = cfg["defaults"]["kling_cfg_scale"]
         if negative_prompt:
@@ -214,11 +217,15 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
             "resolution": resolution,
             "generate_audio": audio,
         }
+        if end_url:
+            payload["end_image_url"] = end_url
         # Seedance has no negative_prompt param -- fold the standard negatives
         # into the positive prompt instead of silently dropping them.
         if negative_prompt:
             payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
     else:
+        if end_url:
+            die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance")
         payload = {
             "prompt": prompt,
             "image_url": image_url,
@@ -299,6 +306,7 @@ def cmd_motion(args, cfg):
         args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
         cfg["defaults"]["motion_test_audio"],
         cfg,
+        end_frame=args.end_frame,
     )
 
     record = {
@@ -380,6 +388,7 @@ def cmd_final(args, cfg):
         args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
         audio,
         cfg,
+        end_frame=args.end_frame,
     )
 
     record = {
@@ -442,6 +451,44 @@ def cmd_probe(args, cfg):
         "resolution": f"{video.get('width')}x{video.get('height')}",
         "codec": video.get("codec_name"),
         "has_audio": any(s["codec_type"] == "audio" for s in info["streams"]),
+    })
+
+
+def cmd_polish(args, cfg):
+    """Free, local post-processing pass: color grade, optional motion smoothing
+    and upscale/sharpen. No API calls, no cost -- just ffmpeg."""
+    grade = cfg["defaults"]["polish"]["grade_filter"]
+    filters = [grade] if args.grade else []
+    if args.smooth:
+        fps = cfg["defaults"]["polish"]["smooth_fps"]
+        filters.append(
+            f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:vsbmc=1"
+        )
+    if args.upscale:
+        filters.append(f"scale={args.upscale}:flags=lanczos,unsharp=5:5:0.8:5:5:0.4")
+
+    if not filters:
+        die("nothing to do -- pass at least one of --grade / --smooth / --upscale")
+
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-i", args.file,
+        "-vf", ",".join(filters),
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        die(f"ffmpeg polish failed:\n{res.stderr[-1500:]}")
+
+    emit({
+        "input": args.file,
+        "output": str(out),
+        "filters_applied": filters,
+        "bytes": out.stat().st_size,
+        "cost_usd": 0,
     })
 
 
@@ -530,6 +577,7 @@ def main():
     p = sub.add_parser("motion", help="rung 2 — Lite motion test")
     p.add_argument("--scene-id", required=True)
     p.add_argument("--start-frame", required=True, help="approved still URL or path")
+    p.add_argument("--end-frame", help="optional end-frame URL or path (Kling/Seedance only)")
     p.add_argument("--motion", required=True)
     p.add_argument("--seconds", type=int)
     p.add_argument("--negative", help="override the default negative prompt")
@@ -547,6 +595,7 @@ def main():
     p = sub.add_parser("final", help="rung 3 — final take (requires approved cost)")
     p.add_argument("--scene-id", required=True)
     p.add_argument("--start-frame", required=True)
+    p.add_argument("--end-frame", help="optional end-frame URL or path (Kling/Seedance only)")
     p.add_argument("--motion", required=True)
     p.add_argument("--seconds", type=int, required=True)
     p.add_argument("--resolution")
@@ -566,6 +615,16 @@ def main():
     p = sub.add_parser("probe", help="inspect a media file")
     p.add_argument("--file", required=True)
     p.set_defaults(func=cmd_probe)
+
+    p = sub.add_parser("polish", help="free local post-process: color grade / smooth motion / upscale")
+    p.add_argument("--file", required=True)
+    p.add_argument("--grade", action=argparse.BooleanOptionalAction, default=True,
+                    help="apply the cinematic color-grade filter (default: on)")
+    p.add_argument("--smooth", action="store_true",
+                    help="motion-compensated frame interpolation (smoother motion, slower to render)")
+    p.add_argument("--upscale", help="target resolution for scale+sharpen, e.g. 3840:2160")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_polish)
 
     p = sub.add_parser("assemble", help="stitch clips + voiceover with ffmpeg")
     p.add_argument("--clips", default=str(WORK / "clips"))
