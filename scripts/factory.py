@@ -252,6 +252,21 @@ def first_url(result, *keys):
     return None
 
 
+def all_urls(result, *keys):
+    """Pull every output URL out of fal's varied response shapes (e.g. num_images > 1)."""
+    for key in keys:
+        node = result.get(key)
+        if isinstance(node, list) and node:
+            urls = [item.get("url") for item in node if isinstance(item, dict) and item.get("url")]
+            if urls:
+                return urls
+        if isinstance(node, dict) and node.get("url"):
+            return [node["url"]]
+        if isinstance(node, str) and node.startswith("http"):
+            return [node]
+    return []
+
+
 # ------------------------------------------------------------------- rungs
 
 def cmd_still(args, cfg):
@@ -287,14 +302,24 @@ def cmd_still(args, cfg):
         emit(record)
         die(f"rung 1 failed: {exc}")
 
-    url = first_url(result, "images", "image")
-    record.update(status="success", output_url=url, request_id=result.get("_request_id"))
+    urls = all_urls(result, "images", "image")
+    record.update(
+        status="success", output_url=urls[0] if urls else None,
+        output_urls=urls, request_id=result.get("_request_id"),
+    )
     log_generation(record)
 
-    out = None
-    if url and args.out:
-        out = download(url, args.out)
-        record["local_path"] = str(out)
+    local_paths = []
+    if urls and args.out:
+        out_dir = pathlib.Path(args.out)
+        if len(urls) == 1:
+            local_paths.append(str(download(urls[0], args.out)))
+        else:
+            for i, u in enumerate(urls, start=1):
+                suffix = pathlib.Path(u.split("?")[0]).suffix or ".jpg"
+                local_paths.append(str(download(u, out_dir / f"variant_{i}{suffix}")))
+        record["local_path"] = local_paths[0]
+        record["local_paths"] = local_paths
 
     emit(record)
 
@@ -629,7 +654,8 @@ def main():
     p.add_argument("--ref", action="append", help="reference image URL or local path (repeatable)")
     p.add_argument("--no-canonical", action="store_true",
                     help="don't auto-prepend identity.canonical_face_ref from config.json")
-    p.add_argument("--count", type=int, default=1)
+    p.add_argument("--count", type=int, default=3,
+                    help="variants to generate (default 3 -- best-of-3 for identity match, see fal-master-prompt.md 2.1)")
     p.add_argument("--aspect")
     p.add_argument("--model")
     p.add_argument("--out", default=str(WORK / "stills"))

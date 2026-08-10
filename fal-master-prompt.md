@@ -57,6 +57,37 @@ do not alter the face, no change to facial structure, no beautification,
 no age change, no extra fingers, no warped hands, no text, no watermark
 ```
 
+### 2.1 Rung-1 variant selection — automatic, before the user sees anything
+
+`factory.py still` now defaults to `--count 3` (not 1). This exists because
+face-identity misses are the single most common rung-1 failure this project
+has hit, and picking the best of three matches the reference far more
+reliably than judging one shot in isolation.
+
+The selection step is **not** a separate coded face-recognition system —
+fal has no face-similarity/verification endpoint (checked; the closest
+thing is `ip-adapter-face-id`, a *generation* technique, not a comparator),
+and adding one means either breaking this project's stdlib-only design with
+a local embedding model, or onboarding a new third-party API (new account,
+new domain to allowlist). Given the user's explicit choice, the comparator
+is Claude itself:
+
+1. Run `still` with the default 3 variants — `local_paths` in the result
+   lists all three.
+2. Read all three images plus `identity.canonical_face_ref` and the source
+   photos in `work/refs/face/`.
+3. Judge each variant against the reference on the things that actually
+   drift — face shape/width, nose, jaw, eyebrows, not lighting or framing.
+4. Discard any variant that's a clear miss without showing it to the user.
+   Present only the winner (or top 2 if genuinely close) for approval, not
+   all three by default — the point is to cut the user's back-and-forth,
+   not move it downstream.
+
+If this project later needs comparison speed/scale beyond what an LLM call
+per batch gives, revisit the onnxruntime-local or third-party-API options
+noted above — that trade-off should be made deliberately, not defaulted
+into.
+
 ---
 
 ## 3. Motion vocabulary (rung 2 and 3)
