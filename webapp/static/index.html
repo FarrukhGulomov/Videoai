@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Factory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236d5efc'/%3E%3Cpath d='M13 10l9 6-9 6z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span>Video Factory</span>
+  </div>
+  <div class="topbar-right">
+    <span id="health" class="health" hidden></span>
+    <button id="tab-create" class="tab is-active" type="button">Create</button>
+    <button id="tab-history" class="tab" type="button">History</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ CREATE ============ -->
+  <section id="view-create" class="view">
+
+    <!-- Step 1 -->
+    <section class="step" aria-labelledby="s1">
+      <div class="step-head">
+        <span class="step-num">1</span>
+        <div>
+          <h2 id="s1">Describe your shot</h2>
+          <p class="muted">Start from a preset, then edit the details.</p>
+        </div>
+      </div>
+
+      <div id="presets" class="presets" role="group" aria-label="Presets"></div>
+
+      <label class="field">
+        <span class="label">Scene description</span>
+        <textarea id="image-prompt" rows="4"
+          placeholder="A barista pouring latte art in a sunlit Tashkent coffee shop, close-up on the cup, warm morning light"></textarea>
+      </label>
+
+      <div class="row">
+        <label class="field compact">
+          <span class="label">Aspect ratio</span>
+          <select id="aspect"></select>
+        </label>
+        <label class="field compact">
+          <span class="label">Variants</span>
+          <select id="variants">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3" selected>3 — recommended</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <div class="field compact grow-end">
+          <span class="label">Cost</span>
+          <output id="image-cost" class="cost">—</output>
+        </div>
+      </div>
+
+      <button id="btn-image" class="btn primary" type="button">Generate images</button>
+      <p class="hint">Images are cheap. Generating a few and picking the best one costs far less than redoing a video.</p>
+    </section>
+
+    <!-- Step 2 -->
+    <section class="step" aria-labelledby="s2">
+      <div class="step-head">
+        <span class="step-num">2</span>
+        <div>
+          <h2 id="s2">Pick your starting frame</h2>
+          <p class="muted">The video is animated from this exact image.</p>
+        </div>
+      </div>
+      <div id="image-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong>No images yet</strong></p>
+          <p class="muted">Describe a shot above and generate to see options here.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3 -->
+    <section class="step" id="step-video" aria-labelledby="s3">
+      <div class="step-head">
+        <span class="step-num">3</span>
+        <div>
+          <h2 id="s3">Bring it to life</h2>
+          <p class="muted">Describe the motion, then confirm the cost.</p>
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="label">Motion description</span>
+        <textarea id="video-prompt" rows="3"
+          placeholder="Camera pushes in slowly. The steam rises and the light shifts warmer."></textarea>
+      </label>
+
+      <div class="row">
+        <label class="field compact">
+          <span class="label">Model</span>
+          <select id="model"></select>
+        </label>
+        <label class="field compact">
+          <span class="label">Duration</span>
+          <select id="seconds"></select>
+        </label>
+        <div class="field compact grow-end">
+          <span class="label">Cost</span>
+          <output id="video-cost" class="cost">—</output>
+        </div>
+      </div>
+      <p id="model-note" class="hint"></p>
+
+      <button id="btn-video" class="btn primary" type="button" disabled>Generate video</button>
+      <p id="video-gate" class="hint">Pick a starting frame in step 2 first.</p>
+    </section>
+
+    <!-- Step 4 -->
+    <section class="step" aria-labelledby="s4">
+      <div class="step-head">
+        <span class="step-num">4</span>
+        <div>
+          <h2 id="s4">Your video</h2>
+          <p class="muted">Preview, download, or regenerate with a tweak.</p>
+        </div>
+      </div>
+      <div id="video-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong>No video yet</strong></p>
+          <p class="muted">Finished videos appear here and in History.</p>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============ HISTORY ============ -->
+  <section id="view-history" class="view" hidden>
+    <h2>History</h2>
+    <p class="muted">Everything generated in this workspace, newest first.</p>
+    <div id="history-list" class="results"></div>
+  </section>
+</main>
+
+<!-- Cost confirmation -->
+<div id="confirm" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Confirm cost</h3>
+    <p class="confirm-amount"><span id="confirm-cost">—</span></p>
+    <p id="confirm-detail" class="muted"></p>
+    <p class="muted small">This charges your fal.ai balance. Nothing is charged if it fails.</p>
+    <div class="modal-actions">
+      <button id="confirm-cancel" class="btn ghost" type="button">Cancel</button>
+      <button id="confirm-ok" class="btn primary" type="button">Generate</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
