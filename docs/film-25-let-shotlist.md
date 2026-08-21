@@ -61,7 +61,7 @@ full length.
 
 Using the routing table in `fal-master-prompt.md` §5:
 
-- **Veo 3.1** ($0.15/s) — the 7 shots where a micro-expression carries the
+- **Veo 3.1** ($0.15/s) — the 6 shots where a micro-expression carries the
   scene. Strongest face fidelity, and the whole film dies if his face drifts.
 - **Kling 3.0** ($0.126/s) — everything else: environment, inserts, hands,
   wide shots. Cheapest, and face fidelity matters less when he is small in frame
@@ -84,9 +84,9 @@ your name, it also makes the story land harder.
 
 **Option B: a fictional protagonist.** Generate one canonical portrait first
 (3 variants, $0.45), approve it, point `canonical_face_ref` at it, and treat it
-as the single source of truth for all 26 shots. Do not skip this step and
+as the single source of truth for all 29 shots. Do not skip this step and
 generate each shot from the text description alone — that is how you end up with
-26 different men.
+29 different men.
 
 ### 1.2 CHARACTER_LOCK — paste verbatim, never paraphrase
 
@@ -157,41 +157,57 @@ payoff: the film starts watching him only when the company stops.
 
 ## 3. Shot list
 
-26 shots. `K` = Kling 3.0, `V` = Veo 3.1. `s` = generated seconds (cut in post).
+29 shots, 29 final videos — sharing a still does not reduce that count, it only
+means two shots animate from one already-paid, already-approved image instead of
+generating a second one. `K` = Kling 3.0, `V` = Veo 3.1. `s` = generated seconds
+(cut in post). **Still** names which image-generation setup each shot's start
+frame comes from — this is the column that controls cost, and it is generated
+**once per name, not once per row.**
 
-| # | Time | Shot | Model | s |
-|---|---|---|---|---|
-| S01 | 0–5 | Elevator opens, he steps out, pauses, small controlled smile | **V** | 6 |
-| S02 | 5–7 | PAST: teaching a younger colleague at a monitor | K | 4 |
-| S03 | 7–8.5 | PAST: he solves it, colleagues exhale with relief | K | 4 |
-| S04 | 8.5–10 | PAST: presenting to an attentive conference room | K | 4 |
-| S05 | 10–11.5 | PAST: launch event, he stands beside the screen | K | 4 |
-| S06 | 11.5–12.5 | INSERT: his hands on old printed product specs | K | 4 |
-| S07 | 12.5–13 | INSERT: old team photographs spread on a desk | K | 4 |
-| S08 | 13–16 | PRESENT: exec meeting wide, expat presenting, he at the table edge | K | 4 |
-| S09 | 16–19 | He raises his hand slightly; leader gives a small "later" gesture | K | 4 |
-| S10 | 19–22 | His hand lowers; expression barely changes | **V** | 4 |
-| S11 | 22–24 | He speaks. The room stays silent | K | 4 |
-| S12 | 24–26.5 | Another exec repeats it. Everyone engages | K | 4 |
-| S13 | 26.5–28 | INSERT: strategy slide, his name absent | K | 4 |
-| S14 | 28–30 | Expat congratulated; he is background, out of focus | K | 4 |
-| S15 | 30–31.5 | INSERT: the new corner office, door open | K | 4 |
-| S16 | 31.5–33 | He works alone at his desk, small in a wide frame | K | 4 |
-| S17 | 33–35 | Celebration. He watches from the audience. Push to face | **V** | 6 |
-| S18 | 35–39 | Meeting. Screen behind. He looks around; nobody looks back | K | 6 |
-| S19 | 39–43 | He closes his notebook slowly. Hands, then face | **V** | 6 |
-| S20 | 43–45 | Evening. Almost-empty office. He packs | K | 4 |
-| S21 | 45–47 | Drawer opens: old ID badge and a photograph | K | 4 |
-| S22 | 47–49 | He looks at the photo. Faint smile. Sets it down | **V** | 4 |
-| S23 | 49–50 | He walks out of frame. Camera holds on the empty desk | K | 6 |
-| S24 | 50–52 | Morning. He exits the building, stops, looks back | K | 4 |
-| S25 | 52–54 | Phone vibrates. He reads. He smiles | **V** | 4 |
-| S26 | 54–55 | He pockets the phone and walks. Camera follows | K | 4 |
-| S27 | 55–57 | Inside: the product is failing. The new exec is lost | K | 4 |
-| S28 | 57–58 | A senior manager looks around the room. Silence | K | 4 |
-| S29 | 58–60 | Slow push to the empty chair. The ID badge is still there. HOLD | K | 6 |
+| # | Time | Shot | Model | s | Still | Variants |
+|---|---|---|---|---|---|---|
+| S01 | 0–5 | Elevator opens, he steps out, pauses, small controlled smile | **V** | 6 | `A` solo | 3 |
+| S02 | 5–7 | PAST: teaching a younger colleague at a monitor | K | 4 | `B` shared | 3 |
+| S03 | 7–8.5 | PAST: he solves it, colleagues exhale with relief | K | 4 | `B` *(reuses S02's image)* | — |
+| S04 | 8.5–10 | PAST: presenting to an attentive conference room | K | 4 | `C` solo | 3 |
+| S05 | 10–11.5 | PAST: launch event, he stands beside the screen | K | 4 | `D` solo | 3 |
+| S06 | 11.5–12.5 | INSERT: his hands on old printed product specs | K | 4 | `E` insert, no face | 1 |
+| S07 | 12.5–13 | INSERT: old team photographs spread on a desk | K | 4 | `F` insert, no face | 1 |
+| S08 | 13–16 | PRESENT: exec meeting wide, expat presenting, he at the table edge | K | 4 | `G` shared | 3 |
+| S09 | 16–19 | He raises his hand slightly; leader gives a small "later" gesture | K | 4 | `G` *(reuses S08's image)* | — |
+| S10 | 19–22 | His hand lowers; expression barely changes | **V** | 4 | `H` solo | 3 |
+| S11 | 22–24 | He speaks. The room stays silent | K | 4 | `I` shared | 3 |
+| S12 | 24–26.5 | Another exec repeats it. Everyone engages | K | 4 | `I` *(reuses S11's image)* | — |
+| S13 | 26.5–28 | INSERT: strategy slide, his name absent | K | 4 | `J` insert, no face | 1 |
+| S14 | 28–30 | Expat congratulated; he is background, out of focus | K | 4 | `K2` solo, low risk | 1 |
+| S15 | 30–31.5 | INSERT: the new corner office, door open | K | 4 | `L` insert, no face | 1 |
+| S16 | 31.5–33 | He works alone at his desk, small in a wide frame | K | 4 | `M` solo | 3 |
+| S17 | 33–35 | Celebration. He watches from the audience. Push to face | **V** | 6 | `N` solo | 3 |
+| S18 | 35–39 | Meeting. Screen behind. He looks around; nobody looks back | K | 6 | `O` solo | 3 |
+| S19 | 39–43 | He closes his notebook slowly. Hands, then face | **V** | 6 | `P` solo | 3 |
+| S20 | 43–45 | Evening. Almost-empty office. He packs | K | 4 | `Q` shared | 3 |
+| S21 | 45–47 | Drawer opens: old ID badge and a photograph | K | 4 | `R` insert, no face | 1 |
+| S22 | 47–49 | He looks at the photo. Faint smile. Sets it down | **V** | 4 | `S` solo | 3 |
+| S23 | 49–50 | He walks out of frame. Camera holds on the empty desk | K | 6 | `Q` *(reuses S20's image)* | — |
+| S24 | 50–52 | Morning. He exits the building, stops, looks back | K | 4 | `T` shared | 3 |
+| S25 | 52–54 | Phone vibrates. He reads. He smiles | **V** | 4 | `U` solo | 3 |
+| S26 | 54–55 | He pockets the phone and walks. Camera follows | K | 4 | `T` *(reuses S24's image)* | — |
+| S27 | 55–57 | Inside: the product is failing. The new exec is lost | K | 4 | `V2` shared, no protagonist | 3 |
+| S28 | 57–58 | A senior manager looks around the room. Silence | K | 4 | `V2` *(reuses S27's image)* | — |
+| S29 | 58–60 | Slow push to the empty chair. The ID badge is still there. HOLD | K | 6 | `W` insert, no face | 1 |
 
-*(S01–S29 minus three merged inserts = 26 billable generations.)*
+**23 still-generation setups cover all 29 shots.** Six pairs (`B`, `G`, `I`, `Q`,
+`T`, `V2`) share an image across two shots — legitimate because both shots in
+each pair are the same location, the same moment, continuing straight into each
+other (e.g. S20 packing → S23 the same desk after he's walked out of it). Six
+inserts (`E F J L R W`) have no face in frame at all — the identity-lock check
+that justifies generating 3 variants doesn't apply to a hand, a slide, or an
+empty chair, so those generate once. `S14` is marked low-risk (out of focus,
+background) and also generates once rather than three.
+
+**Do not generate any of these twice.** One `still` call per named setup,
+approve it, then reuse its URL as the `--start-frame` for every shot that lists
+that letter.
 
 ---
 
@@ -683,27 +699,44 @@ breaks the one thing the film depends on. Re-run it rather than shipping it.
 
 ## 6. Budget
 
-| Item | Cost |
-|---|---|
-| Stills — 26 shots × 3 variants × $0.15 | $11.70 |
-| Motion tests — 9 complex shots × 4s × $0.03 | $1.08 |
-| Finals — 19 Kling + 7 Veo, ~4s each | $13.78 |
-| **Clean first pass** | **$26.56** |
-| **Realistic, with ~50% reshoots** | **≈ $40** |
-| Worst case, every shot twice | ≈ $53 |
+The plan below generates **every shot exactly once.** Nothing here is doubled
+on purpose — the numbers already assume a clean run, and the only thing that
+adds a second generation is a shot that genuinely fails review (§6.1).
 
-Reshoots are not a failure mode here, they are the plan. The single most
-expensive mistake would be skipping the $1 motion tests on the seven
-face-critical shots and paying Veo rates to discover a drift.
+| Item | Detail | Cost |
+|---|---|---|
+| Stills | 23 setups (not 29) — 6 shared pairs + 6 no-face inserts generate once, §3 | $8.25 |
+| Motion tests | 6 shots with real subtle-acting risk: S09, S10, S17, S19, S22, S25 | $0.72 |
+| Finals | All 29 shots, one generation each — 6 Veo (30s total) + 23 Kling (98s total) | $16.85 |
+| **Plan total, one pass** | | **$25.82** |
 
-**Recommendation: fund $50.** Enough for the film plus honest iteration; not so
-much that a runaway loop can hurt.
+This is not the number quoted the first time this document was written
+($26.56) despite covering strictly less redundant work — that number was
+**wrong**, not conservative: it counted 26 final videos when the shot list
+actually has 29. This version prices what is actually being generated.
+
+### 6.1 What actually costs extra — and what doesn't
+
+Sharing stills and skipping variants on faceless inserts removes real waste.
+It does **not** remove the one thing that legitimately costs more than plan: a
+shot where the delivered take doesn't hold up on review (`factory.py frames`
+against the canonical reference, per §5.4) and has to be run again. That is not
+double-generating by habit — it's the one case where a second generation buys
+something the first one didn't.
+
+If **every** face-critical shot needed one reshoot (worst realistic case, not
+the expected one): +6 finals ≈ +$3.20, landing near **$29**. That is the outer
+bound, not the plan.
+
+**Fund $30.** That is the real plan cost plus room for the reshoots that
+sometimes turn out to be necessary — not a buffer for regenerating things that
+already worked.
 
 ---
 
 ## 7. Risks, stated plainly
 
-1. **26 shots of face consistency is the hardest thing this pipeline has
+1. **29 shots of face consistency is the hardest thing this pipeline has
    attempted.** The previous film was 3 shots and needed several attempts. Expect
    to reshoot several, and QC every one against the canonical reference.
 2. **Two people in frame doubles the failure rate.** S02, S09, S12, S14, S27
