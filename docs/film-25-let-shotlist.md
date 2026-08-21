@@ -73,29 +73,31 @@ Using the routing table in `fal-master-prompt.md` §5:
 
 ## 1. The protagonist
 
-### 1.1 Which face
+### 1.1 Which face — decided
 
-**Option A (recommended): use the canonical reference already in the project.**
-`identity.canonical_face_ref` in `scripts/config.json` points at an approved
-still of a Central Asian man in roughly the right age bracket, already proven to
-hold across generations. It is paid for, tested, and removes the hardest problem
-in the film on day one. If this is your own face and the film is going out under
-your name, it also makes the story land harder.
-
-**Option B: a fictional protagonist.** Generate one canonical portrait first
-(3 variants, $0.45), approve it, point `canonical_face_ref` at it, and treat it
-as the single source of truth for all 29 shots. Do not skip this step and
-generate each shot from the text description alone — that is how you end up with
-29 different men.
+**Uses the canonical reference already in the project.**
+`identity.canonical_face_ref` in `scripts/config.json` points at
+`work/stills/scene03_still1_v3.jpg` — the Uzbek man already approved from an
+earlier session, tested across multiple prior generations. Every shot in this
+film reuses that one face. Never generate a shot's start frame from the text
+description alone with no image reference — that is how 29 shots turn into 29
+different men.
 
 ### 1.2 CHARACTER_LOCK — paste verbatim, never paraphrase
 
+Explicit user rule, locked in before generation started: the protagonist's
+ethnicity is **Uzbek specifically**, not a generic "Central Asian" placeholder,
+and the existing approved character (`identity.canonical_face_ref`) is the one
+face used for the entire film — not a new face invented from text.
+
 ```
-A Central Asian man of exactly 40 years, short black hair combed back
-with faint grey at the temples, thick dark eyebrows, brown eyes with fine
-lines at the outer corners, straight nose, defined but soft jawline,
-clean-shaven with a faint shadow, light olive skin with natural visible
-pores and real skin texture, medium athletic build
+An Uzbek man of exactly 40 years, Central Asian features, short black hair
+combed back with faint grey at the temples, thick dark eyebrows, brown eyes
+with fine lines at the outer corners, straight nose, defined but soft
+jawline, clean-shaven with a faint shadow, light olive skin with natural
+visible pores and real skin texture, medium athletic build. Exact same
+person as the reference image — preserve precise facial identity, do not
+reinterpret or stylize the face.
 ```
 
 ### 1.3 WARDROBE — two states only
