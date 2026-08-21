@@ -73,31 +73,50 @@ Using the routing table in `fal-master-prompt.md` §5:
 
 ## 1. The protagonist
 
-### 1.1 Which face — decided
+### 1.1 Which face — decided (revised)
 
-**Uses the canonical reference already in the project.**
-`identity.canonical_face_ref` in `scripts/config.json` points at
-`work/stills/scene03_still1_v3.jpg` — the Uzbek man already approved from an
-earlier session, tested across multiple prior generations. Every shot in this
-film reuses that one face. Never generate a shot's start frame from the text
-description alone with no image reference — that is how 29 shots turn into 29
-different men.
+**Uses the `worker` character in `identity.characters` (`scripts/config.json`),
+reference image `work/refs/characters/worker.jpg`.**
+
+This supersedes the earlier decision to reuse `robot_fight_protagonist`
+(`scene03_still1_v3.jpg`). The user supplied a new reference — a 4-panel
+AI-generated business-photo sheet, delivered as a Google Drive link since the
+image didn't attach as a file directly. `drive.google.com` is proxy-blocked for
+direct download in this environment; retrieved instead via
+`mcp__Google_Drive__download_file_content` and decoded from base64. The clearest
+frontal panel (direct gaze, even light) was cropped out as the clean reference —
+the full 4-panel sheet is kept at `worker_source.jpg` but is not used directly as
+a `--ref`, since handing a model four different compositions at once as one
+image invites confusion, not consistency.
+
+**Explicit user instruction: take the face structure from the new reference
+only — not its age, wardrobe, or expression.** The source photos read as
+significantly older with a full grey beard; the user set the target age to
+**~45**, not whatever the source implies and not the film brief's original
+38–42. `identity.characters.worker.description` carries this exact instruction
+so it survives being read back later. `canonical_face_ref` now points at
+`worker` by default — every `still` call auto-prepends it.
+
+Every shot in this film reuses this one face. Never generate a shot's start
+frame from the text description alone with no image reference — that is how 29
+shots turn into 29 different men.
 
 ### 1.2 CHARACTER_LOCK — paste verbatim, never paraphrase
 
-Explicit user rule, locked in before generation started: the protagonist's
-ethnicity is **Uzbek specifically**, not a generic "Central Asian" placeholder,
-and the existing approved character (`identity.canonical_face_ref`) is the one
-face used for the entire film — not a new face invented from text.
+Explicit user rules, in order of when they were set: (1) the protagonist's
+ethnicity is **Uzbek specifically**, not a generic "Central Asian" placeholder;
+(2) the face comes from the `worker` reference, age adjusted to **~45**; (3)
+only the face structure is taken from that reference, not its wardrobe or
+expression — §1.3 below still governs wardrobe.
 
 ```
-An Uzbek man of exactly 40 years, Central Asian features, short black hair
-combed back with faint grey at the temples, thick dark eyebrows, brown eyes
-with fine lines at the outer corners, straight nose, defined but soft
-jawline, clean-shaven with a faint shadow, light olive skin with natural
-visible pores and real skin texture, medium athletic build. Exact same
-person as the reference image — preserve precise facial identity, do not
-reinterpret or stylize the face.
+An Uzbek man of approximately 45 years, Central Asian features, short black
+hair with visible grey at the temples, a trimmed short beard and moustache
+mixed with grey, a fuller face shape, brown eyes with fine lines at the
+outer corners, straight nose, jawline softened by the beard, olive/tan skin
+tone with natural visible texture, medium build. Exact same person as the
+reference image — preserve precise facial identity, do not reinterpret or
+stylize the face.
 ```
 
 ### 1.3 WARDROBE — two states only

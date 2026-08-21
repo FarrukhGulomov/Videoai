@@ -40,8 +40,21 @@
   },
 
   "identity": {
-    "canonical_face_ref": "work/stills/scene03_still1_v3.jpg",
-    "note": "The one still the user actually approved (rung-1 v3 variant, fight scene). Use this as the primary --ref for all future stills instead of raw phone photos -- it is already paid for, already confirmed to match, and a single consistent anchor image gives more consistent identity across shots than re-mixing varied selfies each time. The 6 raw phone photos in work/refs/face/ stay available as secondary --ref support if a shot needs an angle the canonical still doesn't have (e.g. profile)."
+    "canonical_face_ref": "work/refs/characters/worker.jpg",
+    "note": "canonical_face_ref is auto-prepended to every `still` call's --ref (see cmd_still). It currently points at the 'worker' character below -- switch this value to reuse a different named character as the default for new work.",
+    "characters": {
+      "worker": {
+        "ref": "work/refs/characters/worker.jpg",
+        "source_sheet": "work/refs/characters/worker_source.jpg",
+        "added": "2026-08-21, user-supplied via Google Drive link (drive.google.com file id 10KythdOHP2hnyemcNnL4uZent6BdPcVf), downloaded via mcp__Google_Drive__download_file_content since the domain is proxy-blocked for direct curl",
+        "note": "ref is one panel cropped from a 4-panel AI-generated business-photo sheet (crop=704:384:704:0 on the top-right panel -- the clearest frontal, direct gaze). User's explicit rule: take the FACE STRUCTURE only from the source sheet, not its exact age/wardrobe/expression -- age locked to ~45 per user instruction, overriding whatever age the source image reads as.",
+        "description": "An Uzbek man of approximately 45 years, Central Asian features, short black hair with visible grey at the temples, a trimmed short beard and moustache mixed with grey, a fuller face shape than the previous canonical, brown eyes with fine lines at the outer corners, straight nose, jawline softened by the beard, olive/tan skin tone with natural texture, medium build. Exact same person as the reference image -- preserve precise facial identity, do not reinterpret or stylize the face."
+      },
+      "robot_fight_protagonist": {
+        "ref": "work/stills/scene03_still1_v3.jpg",
+        "note": "The previously canonical face (rung-1 v3 variant from the robot-fight project, session of 2026-08-09). Superseded as the default by 'worker' but kept here in case a later scene needs to reuse it specifically."
+      }
+    }
   },
 
   "budget": {
