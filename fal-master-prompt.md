@@ -88,6 +88,22 @@ per batch gives, revisit the onnxruntime-local or third-party-API options
 noted above — that trade-off should be made deliberately, not defaulted
 into.
 
+### 2.2 `--no-canonical` for inserts with OTHER people, not the protagonist
+
+`cmd_still` auto-prepends `identity.canonical_face_ref` to every `--ref`
+list (§2.1's whole point). This is correct for any shot with the
+protagonist in it, and harmless for a shot with no people at all. It is
+**wrong** for a shot depicting other, unrelated people the protagonist is
+not part of — e.g. this film's S07 (old anonymous team photos on a desk).
+Hit this directly: the first S07 generation put a recognizable
+worker-like face into two of the "anonymous" photos, reading as an
+accidental de-aged cameo — exactly what section 0.2 rules out.
+
+Pass `--no-canonical` for any insert/background shot whose people are
+explicitly *not* the protagonist. In this film that's S07 and the two
+S27/S28 "new executive, senior manager" shots — none of those three should
+carry any trace of the worker reference.
+
 ---
 
 ## 3. Motion vocabulary (rung 2 and 3)
