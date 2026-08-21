@@ -104,6 +104,23 @@ explicitly *not* the protagonist. In this film that's S07 and the two
 S27/S28 "new executive, senior manager" shots — none of those three should
 carry any trace of the worker reference.
 
+### 2.3 Multi-person shots: "he" is ambiguous, name the actor explicitly
+
+Hit this twice in immediate succession (S09, S12) before the pattern was
+obvious. When a motion prompt says "he lifts his hand" or "he speaks" in a
+multi-person frame, the model does not reliably resolve *which* person —
+it tends to animate whoever reads as most prominent/foreground in the
+frame, not whichever person the prompt-writer had in mind. Both misses put
+action on a foreground colleague instead of the protagonist, which is a
+story-breaking error in a film specifically about the protagonist going
+unnoticed — the opposite of an ordinary artifact.
+
+The fix that worked both times: name the actor by a visible, unambiguous
+trait ("the grey-bearded man on the right, near the screen") **and**
+explicitly freeze everyone else ("the men in the foreground do not move at
+all"). Do this by default for any shot with more than one person where
+only one of them should move — don't wait for the miss to happen first.
+
 ---
 
 ## 3. Motion vocabulary (rung 2 and 3)
