@@ -241,15 +241,21 @@ there's no reason to skip it.
 
 ## 5. Model choice (rung 3) — pick per shot, don't default blindly
 
-Three models are wired into `config.json`. Pick per shot based on what the
+Four models are wired into `config.json`. Pick per shot based on what the
 shot actually needs, then say which one and why before running rung 3 — this
-is a real decision each time, not a fixed default.
+is a real decision each time, not a fixed default. New fal video models
+appear often (LTX-2.3 and Seedance 2.0 both shipped after this project
+started) — check `fal.ai/models` periodically rather than assuming this list
+is final, but **verify a candidate's real schema and price before wiring it
+in** (WebFetch the model's `/api` page for a literal JSON example, the way
+LTX-2.3 was added) — never guess a payload shape from a marketing page.
 
 | Model | `--model` value | $/s (audio on) | Strongest at | Use for |
 |---|---|---|---|---|
-| **Kling 3.0 Standard** | `fal-ai/kling-video/v3/standard/image-to-video` | $0.126 | Smooth natural motion, cinematic color grading, multi-character dialogue with phoneme-level lip-sync. Proven on this user's own approved Higgsfield clips (`model=kling3_0, mode=std, cfg_scale=0.5, sound=on`). | **Default for everything** — action, fights, walking, most dialogue. Cheapest of the three. |
-| **Veo 3.1** | `fal-ai/veo3.1/image-to-video` | $0.15 | Face rendering and identity consistency specifically; reduces uncanny-valley artifacts; strong audio-driven dialogue. | Face-critical calm close-ups where Kling's result drifted from the reference face after a fair retry. |
-| **Seedance 2.0** | `bytedance/seedance-2.0/image-to-video` | $0.3024 | Best overall benchmark quality; best camera-movement precision (91% reference match); most realistic cloth/liquid/hair/particle physics. | Only a single hero/signature shot where precise camera choreography or physics simulation (explosion debris, cloth, spray) is the entire point — never the default, it's 2.4x Kling's price. |
+| **Kling 3.0 Standard** | `fal-ai/kling-video/v3/standard/image-to-video` | $0.126 | Smooth natural motion, cinematic color grading, multi-character dialogue with phoneme-level lip-sync. Proven on this user's own approved Higgsfield clips (`model=kling3_0, mode=std, cfg_scale=0.5, sound=on`) **and** on 13 real shots of this film. | **Default for everything** — action, fights, walking, most dialogue. The only one of the four with an actual track record on this project. |
+| **LTX-2.3** | `fal-ai/ltx-2.3/image-to-video` | $0.06 (1080p) | Cheapest by a wide margin (half of Kling); up to 20s in **one** continuous call, avoiding the multi-clip-concat audio-loss bug this project already hit once; vertical-native, which matches this film's 9:16 frame directly. | Cost-sensitive or ambient shots, and any shot that wants a long uncut take instead of several stitched clips. **Not yet tested on this project's actual likeness-holding** — run it through a rung-2 test before trusting it on a face-critical shot, same as any new model. |
+| **Veo 3.1** | `fal-ai/veo3.1/image-to-video` | $0.15 | Face rendering and identity consistency specifically; reduces uncanny-valley artifacts; strong audio-driven dialogue. | Face-critical calm close-ups where Kling's (or LTX's) result drifted from the reference face after a fair retry. |
+| **Seedance 2.0** | `bytedance/seedance-2.0/image-to-video` | $0.3024 | Best overall benchmark quality; best camera-movement precision (91% reference match); most realistic cloth/liquid/hair/particle physics. | Only a single hero/signature shot where precise camera choreography or physics simulation (explosion debris, cloth, spray) is the entire point — never the default, it's 2.4x Kling's price and 5x LTX's. |
 
 Rates live in `rates.final_take_per_second_usd_by_model`, keyed by exact fal
 model id. `cmd_cost`/`cmd_final` refuse to run for a `--model` not in that
@@ -257,11 +263,15 @@ table rather than guess a price — add the real rate there first if a new
 model gets added.
 
 **Decision order for a new shot:** start from Kling (it is right most of the
-time and is the cheapest). Switch to Veo only if a face-critical shot's
-identity is drifting. Reach for Seedance only when the shot's success
-genuinely depends on camera-move precision or physics simulation that the
-other two have already shown they can't deliver — and say so explicitly
-before spending the extra money, same as any other rung-3 cost.
+time, is cheap, and is the only one with a real track record here). Reach
+for LTX when cost or a long single take matters more than a proven identity
+track record — but sanity-check the face on a cheap rung-2 test first, don't
+promote it straight to a face-critical final. Switch to Veo only if a
+face-critical shot's identity is drifting on the cheaper options. Reach for
+Seedance only when the shot's success genuinely depends on camera-move
+precision or physics simulation the other three have already shown they
+can't deliver — and say so explicitly before spending the extra money, same
+as any other rung-3 cost.
 
 ## 5.1 Prompt density (learned from the Higgsfield reference clips)
 

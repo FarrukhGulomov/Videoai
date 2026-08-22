@@ -1,7 +1,7 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
-  "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest of the three, proven on this user's own Higgsfield clips, strong action/motion/lip-sync). Veo 3.1 for face-critical calm/dialogue close-ups where identity fidelity matters most. Seedance 2.0 only for a hero shot with heavy physics/particle simulation or precise camera choreography that justifies its 2-4x cost premium -- never the default.",
+  "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest proven option, matches this user's own Higgsfield clips, strong action/motion/lip-sync). LTX-2.3 for cost-sensitive or long single-take shots (verified cheapest at $0.06/s 1080p, up to 20s in one call, vertical-native -- untested on this project's actual likeness-holding yet, so not a blind default). Veo 3.1 for face-critical calm/dialogue close-ups. Seedance 2.0 only for a hero shot with heavy physics/particle simulation that justifies its price -- never the default.",
 
   "models": {
     "still":        "fal-ai/nano-banana-pro",
@@ -9,7 +9,8 @@
     "motion_test":  "fal-ai/veo3.1/lite/image-to-video",
     "final_take":   "fal-ai/kling-video/v3/standard/image-to-video",
     "final_take_alt_veo":      "fal-ai/veo3.1/image-to-video",
-    "final_take_alt_seedance": "bytedance/seedance-2.0/image-to-video"
+    "final_take_alt_seedance": "bytedance/seedance-2.0/image-to-video",
+    "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video"
   },
 
   "rates": {
@@ -19,7 +20,8 @@
       "fal-ai/kling-video/v3/standard/image-to-video": 0.126,
       "fal-ai/veo3.1/image-to-video": 0.15,
       "bytedance/seedance-2.0/image-to-video": 0.3024,
-      "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing)."
+      "fal-ai/ltx-2.3/image-to-video": 0.06,
+      "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing). LTX-2.3's 0.06 is the 1080p tier; 1440p is 0.12 and 4K is 0.24 -- add those as separate model ids (e.g. with a resolution suffix) if a shot needs them, don't silently reuse this rate at a different resolution."
     }
   },
 

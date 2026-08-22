@@ -193,9 +193,9 @@ def resolve_image(ref):
 
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None):
-    """Veo, Kling, and Seedance each take a differently-shaped payload. Branch on model family."""
-    if end_frame and "kling" not in model and "seedance" not in model:
-        die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance")
+    """Veo, Kling, Seedance, and LTX each take a differently-shaped payload. Branch on model family."""
+    if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx")):
+        die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance/LTX")
 
     image_url = resolve_image(start_frame)
     end_url = resolve_image(end_frame) if end_frame else None
@@ -224,6 +224,20 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
             payload["end_image_url"] = end_url
         # Seedance has no negative_prompt param -- fold the standard negatives
         # into the positive prompt instead of silently dropping them.
+        if negative_prompt:
+            payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
+    elif "ltx" in model:
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": seconds,
+            "resolution": resolution,
+            "aspect_ratio": cfg["defaults"]["aspect_ratio"],
+            "generate_audio": audio,
+        }
+        if end_url:
+            payload["end_image_url"] = end_url
+        # LTX has no negative_prompt param either -- same fold-in as Seedance.
         if negative_prompt:
             payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
     else:
