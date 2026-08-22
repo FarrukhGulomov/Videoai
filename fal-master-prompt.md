@@ -116,10 +116,19 @@ story-breaking error in a film specifically about the protagonist going
 unnoticed — the opposite of an ordinary artifact.
 
 The fix that worked both times: name the actor by a visible, unambiguous
-trait ("the grey-bearded man on the right, near the screen") **and**
-explicitly freeze everyone else ("the men in the foreground do not move at
-all"). Do this by default for any shot with more than one person where
-only one of them should move — don't wait for the miss to happen first.
+trait ("the grey-bearded man on the right, near the screen"). Do this by
+default for any shot with more than one person where only one of them
+should perform the scripted action — don't wait for the miss to happen
+first.
+
+**Correction, added after user feedback that the first 13 shots read as
+"an animated photo," not video (see section 3.1):** the other half of
+this fix — "the men in the foreground do not move at all" — went too far.
+Freezing everyone else's *idle* motion, not just their reaction to the
+scripted beat, is a direct cause of the cinemagraph look: one moving part
+against a frozen tableau. Say "do not react to X / do not look toward X,"
+never "do not move at all." Background people keep their own small idle
+motion regardless.
 
 ---
 
@@ -133,7 +142,7 @@ stack moves.
 | Push in | `slow push in, 15% over 5 seconds` |
 | Pull out | `slow pull back, 20% over 5 seconds` |
 | Pan | `gentle pan left, 10° over 5 seconds` |
-| Static | `locked off, no camera movement; subject breathes and blinks only` |
+| Held | `camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion` |
 
 Rules:
 
@@ -142,6 +151,36 @@ Rules:
 - Subject motion is described separately and kept small: *"turns head 10° to
   camera and settles"*, not *"turns and walks away"*.
 - If the shot needs two moves, it is two shots.
+
+### 3.1 Ambient life by default — or it reads as an animated photo, not video
+
+User feedback after the first 13 shots: they all read as "a photo brought to
+life," not footage. Diagnosed, not guessed at: every one of those 13 prompts
+used `camera static` / `camera completely static` combined with exactly one
+described action and, in multi-person shots, an explicit freeze on everyone
+else (see 2.3's correction above). One moving part against an otherwise
+frozen frame *is* the definition of a cinemagraph — this wasn't a model
+failure, it was what the prompts asked for.
+
+Two things change by default from here on, for every shot with people in it,
+face-critical or not:
+
+1. **The camera is never truly locked.** Replace `camera static` with
+   `camera holds, faint handheld presence, imperceptible drift` (or similar).
+   Real footage — even a tripod — carries a trace of this; its total absence
+   is what reads as artificial.
+2. **Every visible person keeps idle motion, always**, independent of
+   whatever the scripted beat is: small weight shifts, blinking, a pen
+   turning in someone's fingers, breathing. State this explicitly rather
+   than assuming it: *"everyone in frame keeps their own small natural idle
+   motion throughout — blinking, small weight shifts."* Silence on this
+   point is what produced the mannequin effect in S09–S13.
+
+This does not conflict with 2.3 (naming the actor for the scripted action) or
+with the face-lock rules above (no push-in + light change, small subject
+motion) — it layers underneath them. The protagonist's face-lock instruction
+stays exactly as strict; what's added is that the *world around him* is no
+longer told to hold still.
 
 ---
 
