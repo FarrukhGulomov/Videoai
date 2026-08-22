@@ -159,7 +159,7 @@ main {
 .field { display: block; margin-bottom: 14px; }
 .label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 6px; }
 
-textarea, select {
+textarea, select, input {
   width: 100%;
   background: var(--surface-2);
   color: var(--text);
@@ -169,11 +169,18 @@ textarea, select {
   font: inherit;
   resize: vertical;
 }
-textarea:focus, select:focus {
+textarea:focus, select:focus, input:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(109, 94, 252, 0.18);
 }
+
+.err { color: var(--err); }
+
+.auth-bar { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; }
+.auth-bar .balance { font-variant-numeric: tabular-nums; color: var(--ok); font-weight: 600; }
+.auth-bar .email { color: var(--muted); }
+.auth-bar button { white-space: nowrap; }
 
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .field.compact { flex: 1 1 150px; margin-bottom: 14px; }

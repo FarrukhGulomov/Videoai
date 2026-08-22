@@ -13,6 +13,26 @@ python3 webapp/server.py      # http://127.0.0.1:8000
 No install step, no dependencies — stdlib only, same constraint as the CLI.
 `--port` and `--host` are available.
 
+### Multi-user mode (optional)
+
+Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` (plus `SUPABASE_SERVICE_ROLE_KEY`
+to allow spending) in `.env` and the app switches from single-tenant to
+multi-user: a sign-in bar appears, each account gets its own job history and
+credit balance, and every paid generation is billed against that balance
+instead of running open-ended. Leave all three unset and the app behaves
+exactly as it did before this existed — no login, one shared workspace.
+
+1. Apply `02-multiuser-schema.sql` to your Supabase project (adds
+   `owner_id` columns plus the `credits` / `credit_ledger` tables and their
+   RLS policies — see that file's comments for the design).
+2. Fill in the three `SUPABASE_*` values from Project Settings → API.
+3. Grant a new user credit with `supabase_client.record_spend(user_id,
+   +5.00, note="manual top-up")` (there is no self-serve payment flow yet —
+   see "Deliberate limits" below) or an equivalent insert into
+   `credit_ledger` / `credits` from the Supabase SQL editor.
+4. Restart the server. `/api/health`'s `auth_enabled` flag reports whether
+   the UI is in multi-user mode.
+
 ## What it does
 
 The main flow is four steps on one page:
@@ -43,22 +63,50 @@ the server quoted.
 
 ## Security notes
 
-- `FAL_KEY` is read server-side from the environment and never appears in any
-  response. Verified: no endpoint echoes it.
+- `FAL_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are read server-side from the
+  environment and never appear in any response. Verified: no endpoint echoes
+  them.
 - `/media/` is confined to `work/` — paths are resolved and checked against
   that root, so a crafted URL cannot read elsewhere on disk.
 - Prompts are rendered as DOM text nodes, never `innerHTML`, so user text
   cannot inject markup.
+- The session cookie (`vf_session`, holding the Supabase access token) is
+  `HttpOnly` and `SameSite=Lax` so page script can't read it and it isn't
+  sent cross-site. It is **not** marked `Secure`, because this is still a
+  local-first tool typically served over plain HTTP — add `Secure` (and put
+  a real TLS-terminating proxy in front) before exposing multi-user mode on
+  the public internet.
+- `credits` and `credit_ledger` carry no client-writable RLS policy at all
+  (see `02-multiuser-schema.sql`) — the only way to move a balance is
+  `supabase_client.record_spend()` using the service role key, called
+  exclusively from the server after a generation actually succeeds. A user's
+  own token can only ever *read* their own balance.
+- The pre-existing cost-confirmation gate is unchanged and still runs first:
+  `approved_cost` must match the server-quoted price before a paid call is
+  even attempted. The credit-balance check in multi-user mode is a second,
+  independent gate on top of it, not a replacement.
 
 ## Deliberate limits
 
-This is a **single-tenant local tool**, not a multi-user product. There is no
-login, and no per-user isolation anywhere — `01-schema.sql` has no ownership
-column, and RLS is enabled with no policies precisely because everything runs
-through the service role. Serving this to more than one person requires a
-schema migration and an auth layer first; see `docs/startup-strategy.md`.
+Multi-user mode is genuinely multi-tenant (per-user auth, per-user job
+history, per-user credit balance, real RLS on every table) but it is still
+an MVP, not a finished product:
 
-The server uses `ThreadingHTTPServer`, which is fine for local single-user
-use and demos. Putting it on the public internet would mean a real WSGI/ASGI
-server behind a reverse proxy, plus the auth and per-user rate limiting that
-do not exist yet.
+- **No self-serve payments.** Credits are granted by an admin running
+  `supabase_client.record_spend()` or a SQL insert by hand. See
+  `docs/startup-strategy.md` for the phased plan toward Payme/Click.
+- **No atomic balance updates.** `record_spend()` reads the balance, then
+  writes it back — two round trips, not one SQL statement. Fine for an MVP's
+  low concurrency per user; a `SECURITY DEFINER` Postgres function is the
+  fix if it ever becomes a real race.
+- **No password reset / email verification UI.** Whatever your Supabase
+  project's auth settings do (e.g. requiring email confirmation) is what
+  happens — the app surfaces Supabase's own message but adds no flow of its
+  own around it.
+- **`ThreadingHTTPServer`**, which is fine for local use and small-scale
+  demos. Putting either mode on the public internet still wants a real
+  WSGI/ASGI server behind a reverse proxy and per-user rate limiting, which
+  do not exist yet.
+- **Single-tenant mode is still the default.** Leave the `SUPABASE_*`
+  variables unset and none of the above applies — the original one-workspace
+  behavior is unchanged.

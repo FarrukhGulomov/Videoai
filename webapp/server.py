@@ -20,6 +20,7 @@ Run:  python3 webapp/server.py [--port 8000]
 """
 
 import argparse
+import http.cookies
 import importlib.util
 import json
 import mimetypes
@@ -33,12 +34,20 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import supabase_client as db
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 WORK = ROOT / "work"
 JOBS_FILE = WORK / "webapp_jobs.jsonl"
 
 MAX_BODY_BYTES = 2 * 1024 * 1024  # prompts and settings only; media goes by URL
+
+# "local" is the owner_id for every job when Supabase isn't configured --
+# this is what keeps the pre-multi-user single-tenant flow working exactly
+# as before with zero config changes (see supabase_client.configured()).
+LOCAL_OWNER = "local"
+SESSION_COOKIE = "vf_session"
 
 
 # ---------------------------------------------------------------- factory reuse
@@ -58,6 +67,42 @@ def _load_factory():
 
 factory = _load_factory()
 CONFIG = factory.load_config()
+
+
+# ---------------------------------------------------------------------- auth
+
+def _session_token(handler):
+    """Pull the Supabase access token out of the session cookie, or None."""
+    raw = handler.headers.get("Cookie")
+    if not raw:
+        return None
+    jar = http.cookies.SimpleCookie()
+    jar.load(raw)
+    morsel = jar.get(SESSION_COOKIE)
+    return morsel.value if morsel else None
+
+
+def _current_user(handler):
+    """Returns {"id", "email", "access_token"} for a valid session, or
+    None -- both when Supabase isn't configured (single-tenant mode) and
+    when the cookie is missing, expired, or invalid."""
+    if not db.configured():
+        return None
+    token = _session_token(handler)
+    if not token:
+        return None
+    user = db.get_user(token)
+    if not user or not user.get("id"):
+        return None
+    return {"id": user["id"], "email": user.get("email"), "access_token": token}
+
+
+def _session_cookie_header(access_token, max_age):
+    return ("Set-Cookie", f"{SESSION_COOKIE}={access_token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={max_age}")
+
+
+def _clear_cookie_header():
+    return ("Set-Cookie", f"{SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")
 
 
 # ------------------------------------------------------------------- presets
@@ -171,15 +216,17 @@ def _load_persisted():
             _jobs[job["id"]] = job
 
 
-def _new_job(kind, **fields):
+def _new_job(kind, owner_id, **fields):
     job = {
         "id": uuid.uuid4().hex[:12],
         "kind": kind,
+        "owner_id": owner_id,
         "status": "queued",
         "stage": "Queued",
         "created_at": time.time(),
         "outputs": [],
         "error": None,
+        "credit_deducted": None,
         **fields,
     }
     with _jobs_lock:
@@ -225,7 +272,23 @@ def friendly_error(exc):
 
 # -------------------------------------------------------------------- workers
 
-def _run_image_job(job_id, prompt, count, aspect, refs):
+def _charge(job_id, charge_user_id, cost, note):
+    """Deduct cost from charge_user_id's balance after a successful paid
+    generation. No-op in single-tenant mode (charge_user_id is None). A
+    deduction failure (e.g. service key missing) is recorded on the job
+    but never undoes or blocks the already-completed generation -- the
+    fal spend already happened regardless."""
+    if not charge_user_id:
+        return None
+    try:
+        db.record_spend(charge_user_id, -cost, note=note)
+        return True
+    except db.SupabaseError as exc:
+        print(f"  WARNING: credit deduction failed for job {job_id}: {exc}")
+        return False
+
+
+def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         canonical = CONFIG.get("identity", {}).get("canonical_face_ref")
@@ -250,16 +313,17 @@ def _run_image_job(job_id, prompt, count, aspect, refs):
         result = factory.fal_run(model, payload)
         urls = factory.all_urls(result, "images", "image")
 
+        cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 1, "model": model,
-            "prompt": prompt, "cost_usd": round(
-                CONFIG["rates"]["still_per_image_usd"] * count, 4),
+            "prompt": prompt, "cost_usd": cost,
             "status": "success", "output_url": urls[0] if urls else None,
             "request_id": result.get("_request_id"),
         })
+        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} image x{count}")
 
         job = _update(job_id, status="done", stage="Done", outputs=urls,
-                      request_id=result.get("_request_id"))
+                      request_id=result.get("_request_id"), credit_deducted=deducted)
         _persist(job)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user, logged raw
         factory.log_generation({
@@ -271,7 +335,7 @@ def _run_image_job(job_id, prompt, count, aspect, refs):
         _persist(job)
 
 
-def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_image_url):
+def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_image_url, charge_user_id):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         payload = factory.build_video_payload(
@@ -293,9 +357,11 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_i
             "request_id": result.get("_request_id"),
         })
 
+        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} video {seconds}s {model}")
+
         job = _update(job_id, status="done", stage="Done",
                       outputs=[url] if url else [],
-                      request_id=result.get("_request_id"))
+                      request_id=result.get("_request_id"), credit_deducted=deducted)
         _persist(job)
     except Exception as exc:  # noqa: BLE001
         factory.log_generation({
@@ -318,12 +384,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- helpers ---------------------------------------------------------
 
-    def _send(self, code, payload, ctype="application/json"):
+    def _send(self, code, payload, ctype="application/json", extra_headers=None):
         body = json.dumps(payload).encode() if ctype == "application/json" else payload
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        for header in extra_headers or []:
+            self.send_header(*header)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -347,15 +415,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._config_payload())
             if path == "/api/health":
                 return self._send(200, self._health_payload())
+            if path == "/api/auth/me":
+                return self._auth_me()
             if path == "/api/jobs":
+                owner = self._owner_id()
+                if owner is None:
+                    return self._send(401, {"error": "Sign in to see your jobs."})
                 with _jobs_lock:
-                    jobs = sorted(_jobs.values(), key=lambda j: j["created_at"], reverse=True)
+                    jobs = sorted(
+                        (j for j in _jobs.values() if j.get("owner_id") == owner),
+                        key=lambda j: j["created_at"], reverse=True,
+                    )
                 return self._send(200, {"jobs": jobs[:60]})
             if path.startswith("/api/jobs/"):
+                owner = self._owner_id()
+                if owner is None:
+                    return self._send(401, {"error": "Sign in to see your jobs."})
                 job_id = path.rsplit("/", 1)[-1]
                 with _jobs_lock:
                     job = _jobs.get(job_id)
-                if not job:
+                if not job or job.get("owner_id") != owner:
                     return self._send(404, {"error": "No such job."})
                 return self._send(200, job)
             if path.startswith("/media/"):
@@ -369,6 +448,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         try:
             body = self._read_json()
+            if path == "/api/auth/signup":
+                return self._auth_signup(body)
+            if path == "/api/auth/login":
+                return self._auth_login(body)
+            if path == "/api/auth/logout":
+                return self._auth_logout()
             if path == "/api/quote":
                 return self._quote(body)
             if path == "/api/generate/image":
@@ -422,7 +507,79 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "fal_key_configured": bool(os.environ.get("FAL_KEY", "").strip()),
             "ffmpeg_available": shutil.which("ffmpeg") is not None,
+            "auth_enabled": db.configured(),
         }
+
+    # -- auth --------------------------------------------------------------
+
+    def _owner_id(self):
+        """The job/history owner for this request: the signed-in user's id
+        when Supabase is configured, or the constant LOCAL_OWNER when it
+        isn't -- so single-tenant installs keep seeing all their own jobs
+        with no login step, exactly as before this feature existed."""
+        if not db.configured():
+            return LOCAL_OWNER
+        user = _current_user(self)
+        return user["id"] if user else None
+
+    def _auth_me(self):
+        if not db.configured():
+            return self._send(200, {"auth_enabled": False, "user": None})
+        user = _current_user(self)
+        if not user:
+            return self._send(200, {"auth_enabled": True, "user": None})
+        try:
+            balance = db.get_balance(user["id"], user["access_token"])
+        except db.SupabaseError:
+            balance = None
+        return self._send(200, {
+            "auth_enabled": True,
+            "user": {"email": user["email"], "id": user["id"]},
+            "balance_usd": balance,
+        })
+
+    def _auth_signup(self, body):
+        if not db.configured():
+            raise ValueError("Sign-up is not enabled on this server.")
+        email = (body.get("email") or "").strip()
+        password = body.get("password") or ""
+        if not email or "@" not in email:
+            raise ValueError("Enter a valid email address.")
+        if len(password) < 6:
+            raise ValueError("Password must be at least 6 characters.")
+        try:
+            result = db.sign_up(email, password)
+        except db.SupabaseError as exc:
+            raise ValueError(str(exc)) from None
+        token = result.get("access_token")
+        if not token:
+            return self._send(200, {
+                "user": None,
+                "message": "Account created. Check your email to confirm before signing in.",
+            })
+        return self._send(200, {"user": {"email": email}},
+                          extra_headers=[_session_cookie_header(token, result.get("expires_in", 3600))])
+
+    def _auth_login(self, body):
+        if not db.configured():
+            raise ValueError("Sign-in is not enabled on this server.")
+        email = (body.get("email") or "").strip()
+        password = body.get("password") or ""
+        if not email or not password:
+            raise ValueError("Enter your email and password.")
+        try:
+            result = db.sign_in(email, password)
+        except db.SupabaseError as exc:
+            raise ValueError("Incorrect email or password.") from None
+        token = result.get("access_token")
+        if not token:
+            raise ValueError("Incorrect email or password.")
+        user = result.get("user") or {}
+        return self._send(200, {"user": {"email": user.get("email", email)}},
+                          extra_headers=[_session_cookie_header(token, result.get("expires_in", 3600))])
+
+    def _auth_logout(self):
+        return self._send(200, {"ok": True}, extra_headers=[_clear_cookie_header()])
 
     def _quote(self, body):
         """Price a paid call without spending anything — the web equivalent
@@ -440,6 +597,25 @@ class Handler(BaseHTTPRequestHandler):
             "shown_as": f"{seconds}s x ${rate}/s = ${cost}",
         })
 
+    def _require_funded_user(self, cost):
+        """Shared gate for both generate endpoints: who is this request
+        for, and (in multi-user mode) can they afford it. Returns
+        (owner_id, charge_user_id) or raises ValueError with a message
+        safe to show the caller."""
+        owner = self._owner_id()
+        if owner is None:
+            raise ValueError("Sign in to generate.")
+        if owner == LOCAL_OWNER:
+            return owner, None
+        user = _current_user(self)
+        balance = db.get_balance(user["id"], user["access_token"])
+        if balance < cost:
+            raise ValueError(
+                f"Not enough credits: balance is ${balance:.2f}, this costs ${cost:.2f}. "
+                "Ask an admin to top up your account."
+            )
+        return owner, owner
+
     def _generate_image(self, body):
         prompt = (body.get("prompt") or "").strip()
         if not prompt:
@@ -453,13 +629,15 @@ class Handler(BaseHTTPRequestHandler):
         if aspect not in ASPECT_RATIOS:
             raise ValueError("Unsupported aspect ratio.")
 
+        cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
+        owner, charge_user_id = self._require_funded_user(cost)
+
         job = _new_job(
-            "image", prompt=prompt, count=count, aspect=aspect,
-            cost_usd=round(CONFIG["rates"]["still_per_image_usd"] * count, 4),
+            "image", owner, prompt=prompt, count=count, aspect=aspect, cost_usd=cost,
         )
         threading.Thread(
             target=_run_image_job,
-            args=(job["id"], prompt, count, aspect, body.get("refs") or []),
+            args=(job["id"], prompt, count, aspect, body.get("refs") or [], charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
@@ -493,15 +671,17 @@ class Handler(BaseHTTPRequestHandler):
                 "Nothing was charged — re-confirm to continue."
             )
 
+        owner, charge_user_id = self._require_funded_user(cost)
+
         job = _new_job(
-            "video", prompt=prompt, image_url=image_url, seconds=seconds,
+            "video", owner, prompt=prompt, image_url=image_url, seconds=seconds,
             model=model, cost_usd=cost,
         )
         threading.Thread(
             target=_run_video_job,
             args=(job["id"], prompt, image_url, seconds, model, rate,
                   bool(body.get("audio", CONFIG["defaults"]["final_audio"])),
-                  body.get("end_image_url")),
+                  body.get("end_image_url"), charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)

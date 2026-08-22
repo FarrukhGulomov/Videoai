@@ -16,6 +16,7 @@
   </div>
   <div class="topbar-right">
     <span id="health" class="health" hidden></span>
+    <div id="auth-bar" class="auth-bar" hidden></div>
     <button id="tab-create" class="tab is-active" type="button">Create</button>
     <button id="tab-history" class="tab" type="button">History</button>
   </div>
@@ -156,6 +157,27 @@
     <div class="modal-actions">
       <button id="confirm-cancel" class="btn ghost" type="button">Cancel</button>
       <button id="confirm-ok" class="btn primary" type="button">Generate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sign in / create account -->
+<div id="auth-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <h3 id="auth-title">Sign in</h3>
+    <p class="muted small">An account is required so generations are billed to your own credit balance.</p>
+    <label class="field">
+      <span class="label">Email</span>
+      <input id="auth-email" type="email" autocomplete="email">
+    </label>
+    <label class="field">
+      <span class="label">Password</span>
+      <input id="auth-password" type="password" autocomplete="current-password">
+    </label>
+    <p id="auth-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="auth-toggle" class="btn ghost" type="button">Need an account? Sign up</button>
+      <button id="auth-submit" class="btn primary" type="button">Sign in</button>
     </div>
   </div>
 </div>

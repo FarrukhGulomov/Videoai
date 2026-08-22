@@ -9,6 +9,8 @@
     selectedImage: null,
     activePreset: null,
     polls: new Map(),
+    auth: { enabled: false, user: null, balance: null },
+    authMode: "login",
   };
 
   // ---------------------------------------------------------------- utils
@@ -89,9 +91,11 @@
     }
     renderPresets();
     renderSelects();
+    wireAuth();
     updateImageCost();
     updateVideoCost();
     checkHealth();
+    await checkAuth();
     loadHistory();
   }
 
@@ -107,6 +111,112 @@
         badge.hidden = false;
       }
     } catch { /* health is advisory only */ }
+  }
+
+  // ----------------------------------------------------------------- auth
+
+  async function checkAuth() {
+    try {
+      const me = await api("/api/auth/me");
+      state.auth = {
+        enabled: !!me.auth_enabled,
+        user: me.user || null,
+        balance: typeof me.balance_usd === "number" ? me.balance_usd : null,
+      };
+    } catch {
+      state.auth = { enabled: false, user: null, balance: null };
+    }
+    renderAuthBar();
+  }
+
+  function renderAuthBar() {
+    const bar = $("auth-bar");
+    if (!state.auth.enabled) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    if (state.auth.user) {
+      const balanceText = state.auth.balance === null ? "" : money(state.auth.balance);
+      bar.replaceChildren(
+        el("span", { class: "email", text: state.auth.user.email }),
+        balanceText ? el("span", { class: "balance", text: balanceText }) : null,
+        el("button", { class: "btn ghost small", type: "button", text: "Sign out", onclick: signOut }));
+    } else {
+      bar.replaceChildren(
+        el("button", { class: "btn ghost small", type: "button", text: "Sign in", onclick: () => openAuthModal("login") }));
+    }
+  }
+
+  /* Returns true if generation may proceed. In single-tenant mode (auth
+     disabled) this is always true -- that's what keeps the original
+     no-login flow working with zero configuration. */
+  function requireSignedIn() {
+    if (!state.auth.enabled) return true;
+    if (state.auth.user) return true;
+    toast("Sign in to generate.", true);
+    openAuthModal("login");
+    return false;
+  }
+
+  function openAuthModal(mode) {
+    state.authMode = mode;
+    $("auth-title").textContent = mode === "signup" ? "Create account" : "Sign in";
+    $("auth-submit").textContent = mode === "signup" ? "Create account" : "Sign in";
+    $("auth-toggle").textContent = mode === "signup"
+      ? "Already have an account? Sign in" : "Need an account? Sign up";
+    $("auth-error").hidden = true;
+    $("auth-modal").hidden = false;
+    $("auth-email").focus();
+  }
+  function closeAuthModal() {
+    $("auth-modal").hidden = true;
+  }
+
+  function wireAuth() {
+    $("auth-toggle").addEventListener("click", () =>
+      openAuthModal(state.authMode === "signup" ? "login" : "signup"));
+    $("auth-submit").addEventListener("click", submitAuth);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("auth-modal").hidden) closeAuthModal();
+    });
+  }
+
+  async function submitAuth() {
+    const email = $("auth-email").value.trim();
+    const password = $("auth-password").value;
+    const btn = $("auth-submit");
+    const errEl = $("auth-error");
+    errEl.hidden = true;
+    btn.disabled = true;
+    try {
+      const path = state.authMode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+      const result = await api(path, { method: "POST", body: JSON.stringify({ email, password }) });
+      if (!result.user) {
+        errEl.textContent = result.message || "Check your email to confirm your account.";
+        errEl.hidden = false;
+        return;
+      }
+      closeAuthModal();
+      $("auth-email").value = "";
+      $("auth-password").value = "";
+      await checkAuth();
+      loadHistory();
+      toast(`Signed in as ${result.user.email}.`);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function signOut() {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } catch { /* clearing client state either way */ }
+    await checkAuth();
+    loadHistory();
   }
 
   function renderPresets() {
@@ -217,6 +327,7 @@
   // -------------------------------------------------------------- images
 
   async function generateImages() {
+    if (!requireSignedIn()) return;
     const prompt = $("image-prompt").value.trim();
     if (!prompt) {
       toast("Describe the shot first.", true);
@@ -246,6 +357,7 @@
           }
           renderImageChoices(done.outputs || []);
           loadHistory();
+          checkAuth();
         },
         (p) => setPanel($("image-results"), workingPanel(p.stage || "Working…")));
     } catch (err) {
@@ -294,6 +406,7 @@
   /* The paid path. The server quotes, the user confirms that exact number,
      and only then does anything get charged — same gate as the CLI. */
   async function askForVideo() {
+    if (!requireSignedIn()) return;
     const prompt = $("video-prompt").value.trim();
     if (!prompt) {
       toast("Describe the motion first.", true);
@@ -371,6 +484,7 @@
           }
           renderVideo(done);
           loadHistory();
+          checkAuth();
           toast("Video ready.");
         },
         (p) => setPanel($("video-results"), workingPanel(p.stage || "Rendering…")));
@@ -402,6 +516,10 @@
 
   async function loadHistory() {
     const list = $("history-list");
+    if (state.auth.enabled && !state.auth.user) {
+      setPanel(list, emptyPanel("Sign in to see your history", "Your generations are private to your account."));
+      return;
+    }
     let data;
     try {
       data = await api("/api/jobs");
