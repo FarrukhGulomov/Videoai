@@ -5,6 +5,37 @@ Built to run through `scripts/factory.py` on fal.ai.
 
 ---
 
+## Story spine
+
+Filled in against `story-master-prompt.md` §13's worksheet — written after
+the fact here (the shot list below was already built on solid instinct),
+but stated explicitly so it governs any future revision instead of staying
+implicit.
+
+**Premise:** *An organization that stops seeing the talent it already has
+loses it.* ([trait: quiet, undemanding competence] → [conflict: repeatedly
+overlooked in favor of louder/newer voices] → [result: he leaves, and the
+company only then feels what it lost] — the exact claim section 8 already
+argues, restated in Egri's provable-sentence form.)
+
+**Protagonist's desire:** to be seen and valued for what he actually
+contributes — not promoted for its own sake, not praised; *noticed.*
+
+**Protagonist's deepest fear:** becoming permanently invisible — not fired,
+not confronted, just quietly written out of the room until no one
+remembers he built any of it.
+
+**Opposing force:** institutional inattention, deliberately not a person
+(§8 — "the antagonist is blindness, not cruelty"). Equal in strength to
+him precisely because it's diffuse and no single person is responsible for
+it — there's no one scene where defeating one antagonist would resolve
+things, which is what makes it inescapable rather than confrontable. Its
+strength is shown, not asserted: S09 (dismissed), then S11→S12 (his point
+ignored, then credited to someone else) is the escalation that proves the
+force is real and rising, not a mood.
+
+---
+
 ## 0. Director's decisions before a single frame is generated
 
 Five calls that shape everything below. Each one exists because of something
@@ -69,6 +100,22 @@ Using the routing table in `fal-master-prompt.md` §5:
 - **Seedance** — not used. Nothing here needs physics simulation, and it costs
   2.4× Kling. Spending it on a film with no explosions would be waste.
 
+### 0.6 The catalyst lands at ~16s, later than a 60s format "should" allow
+
+`story-master-prompt.md` §7 maps a 60s Reels/VSL format to catalyst-in-the-
+first-8-seconds, and §12 names a late hook as a named failure pattern.
+This film's actual catalyst (S09, being waved off) lands around 16–19s —
+noticeably later. **Deliberate, not an oversight:** that table describes an
+attention-optimized ad/VSL, where the viewer needs a reason to keep
+watching within seconds or they scroll past. This is a narrative short film
+riding in Reels' container, not a VSL — Act I (0–5s) is spending its time
+on mood and empathy (a tired, decent man arriving to a place he clearly
+belongs) so the catalyst lands on someone the viewer already has a reason
+to care about, rather than on a stranger. That's a real trade against
+Reels' own retention math, made with eyes open, not a rule missed. If this
+film's actual watch-time data ever shows a steep drop before ~15s, that's
+the signal to revisit this choice — not a hunch.
+
 ---
 
 ## 1. The protagonist
@@ -132,8 +179,17 @@ PAST:     a light blue shirt with the sleeves rolled to the forearm, no
           brown leather strap
 ```
 
-The watch is the continuity anchor across both states. It is the one object
-present in the first shot and the last.
+The watch is a constant across both wardrobe states — present in every shot
+regardless of decade, unlike the badge and jacket. **It is not the film's
+setup/payoff object, though an earlier version of this document claimed
+it was** — S01 (the actual first shot) never frames it, and S29 (the
+actual last shot) has no protagonist in it at all to wear it. The object
+that genuinely bookends the film is the **ID badge**: present throughout
+PRESENT-wardrobe shots, deliberately absent in PAST ones, removed by his
+own hand in S22, and left behind — the film's actual closing image — in
+S29. If a future revision wants the watch to carry payoff weight too, it
+needs an explicit close-up beat added to S01 or an early insert; right now
+it's set dressing, not a tracked object.
 
 ### 1.4 NEGATIVES — appended to every prompt
 
