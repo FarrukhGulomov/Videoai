@@ -92,6 +92,7 @@
     renderPresets();
     renderSelects();
     wireAuth();
+    wirePostprod();
     updateImageCost();
     updateVideoCost();
     checkHealth();
@@ -508,6 +509,8 @@
         el("div", { class: "card-body" },
           el("span", { class: "badge ok", text: money(job.cost_usd || 0) }),
           el("span", { class: "spacer" }),
+          el("button", { class: "btn ghost small", type: "button", text: "Enhance…",
+                          onclick: () => openPostprodModal(url) }),
           el("a", { class: "dl", href: url, download: "", target: "_blank",
                     rel: "noopener", text: "Download" }))));
   }
@@ -537,19 +540,24 @@
 
     list.replaceChildren(...done.slice(0, 40).map((job) => {
       const url = (job.outputs || [])[0];
+      const isVideo = job.kind === "video" || job.kind === "postprod";
       const media = job.status === "error"
         ? el("div", { class: "card-body" },
             el("span", { class: "badge err", text: "Failed" }))
-        : job.kind === "video"
+        : isVideo
           ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
           : el("img", { src: url, alt: "", loading: "lazy" });
+      const label = job.kind === "postprod" ? `Enhanced (${job.op})`
+        : job.kind === "video" ? "Video" : "Image";
 
       return el("div", { class: "card" },
         media,
         el("div", { class: "card-body" },
-          el("span", { class: "badge", text: job.kind === "video" ? "Video" : "Image" }),
+          el("span", { class: "badge", text: label }),
           el("span", { class: "muted small", text: money(job.cost_usd || 0) }),
           el("span", { class: "spacer" }),
+          isVideo && url ? el("button", { class: "btn ghost small", type: "button", text: "Enhance…",
+                                            onclick: () => openPostprodModal(url) }) : null,
           url ? el("a", { class: "dl", href: url, download: "", target: "_blank",
                           rel: "noopener", text: "Download" }) : null),
         job.status === "error"
@@ -557,6 +565,136 @@
               el("span", { class: "muted small", text: job.error || "Failed" }))
           : null);
     }));
+  }
+
+  // ------------------------------------------------------- post-production
+
+  const POSTPROD_PARAM_BUILDERS = {
+    upscale: () => {
+      const tiers = state.config.postprod.upscale_tiers;
+      return el("div", {},
+        el("label", { class: "field compact" },
+          el("span", { class: "label", text: "Output resolution tier" }),
+          el("select", { id: "pp-tier" },
+            ...Object.entries(tiers).map(([k, rate]) =>
+              el("option", { value: k, text: `${k} — $${rate}/s` })))),
+        el("label", { class: "field compact" },
+          el("span", { class: "label", text: "Upscale factor" }),
+          el("input", { id: "pp-factor", type: "number", value: "2", step: "0.5", min: "1", max: "8" })),
+        el("label", { class: "field compact" },
+          el("span", { class: "label", text: "Target FPS (optional — 60 doubles the price)" }),
+          el("input", { id: "pp-fps", type: "number", placeholder: "leave blank to keep source fps" })));
+    },
+    bgremove: () => el("label", { class: "field" },
+      el("span", { class: "label", text: "Background color" }),
+      el("input", { id: "pp-bgcolor", type: "text", value: "Black" })),
+    subtitles: () => el("label", { class: "field" },
+      el("span", { class: "label", text: "Language code (optional)" }),
+      el("input", { id: "pp-lang", type: "text", placeholder: "e.g. ru, uz — leave blank to auto-detect" })),
+    lipsync: () => el("label", { class: "field" },
+      el("span", { class: "label", text: "Voice track URL" }),
+      el("input", { id: "pp-audio-url", type: "url", placeholder: "https://... direct link to the audio file" })),
+  };
+
+  function renderPostprodParams() {
+    const op = $("postprod-op").value;
+    setPanel($("postprod-params"), POSTPROD_PARAM_BUILDERS[op]());
+  }
+
+  function readPostprodParams(op) {
+    if (op === "upscale") {
+      const params = { tier: $("pp-tier").value, factor: Number($("pp-factor").value || 2) };
+      const fps = $("pp-fps").value.trim();
+      if (fps) params.fps = Number(fps);
+      return params;
+    }
+    if (op === "bgremove") {
+      return { background_color: $("pp-bgcolor").value.trim() || "Black" };
+    }
+    if (op === "subtitles") {
+      const lang = $("pp-lang").value.trim();
+      return lang ? { lang } : {};
+    }
+    if (op === "lipsync") {
+      const audioUrl = $("pp-audio-url").value.trim();
+      if (!audioUrl) throw new Error("Paste a direct URL to the voice track first.");
+      return { audio_url: audioUrl };
+    }
+    return {};
+  }
+
+  function openPostprodModal(fileUrl) {
+    if (!requireSignedIn()) return;
+    state.postprodFileUrl = fileUrl;
+    $("postprod-op").value = "upscale";
+    renderPostprodParams();
+    $("postprod-error").hidden = true;
+    $("postprod-modal").hidden = false;
+  }
+  function closePostprodModal() {
+    $("postprod-modal").hidden = true;
+  }
+
+  function wirePostprod() {
+    $("postprod-op").addEventListener("change", renderPostprodParams);
+    $("postprod-cancel").addEventListener("click", closePostprodModal);
+    $("postprod-quote").addEventListener("click", quotePostprod);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("postprod-modal").hidden) closePostprodModal();
+    });
+  }
+
+  async function quotePostprod() {
+    const op = $("postprod-op").value;
+    const errEl = $("postprod-error");
+    errEl.hidden = true;
+    let params;
+    try {
+      params = readPostprodParams(op);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      return;
+    }
+    let quote;
+    try {
+      quote = await api("/api/postprod/quote", {
+        method: "POST",
+        body: JSON.stringify({ op, file_url: state.postprodFileUrl, ...params }),
+      });
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      return;
+    }
+    closePostprodModal();
+    $("confirm-cost").textContent = quote.shown_as;
+    $("confirm-detail").textContent = `${op} · ${quote.model}`;
+    openConfirm(() => runPostprod(op, params, quote));
+  }
+
+  async function runPostprod(op, params, quote) {
+    const fileUrl = state.postprodFileUrl;
+    toast("Starting…");
+    try {
+      const job = await api("/api/postprod/run", {
+        method: "POST",
+        body: JSON.stringify({ op, file_url: fileUrl, ...params, approved_cost: quote.cost_usd }),
+      });
+      poll(job.id,
+        (done) => {
+          checkAuth();
+          loadHistory();
+          if (done.status === "error") {
+            toast(done.error || "That enhancement failed.", true);
+            return;
+          }
+          toast("Enhancement ready — see History.");
+        },
+        () => {});
+    } catch (err) {
+      toast(err.message, true);
+    }
   }
 
   boot();

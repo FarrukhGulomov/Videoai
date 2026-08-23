@@ -182,6 +182,28 @@
   </div>
 </div>
 
+<!-- Post-production: upscale / lip-sync / subtitles / background removal -->
+<div id="postprod-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="postprod-title">
+    <h3 id="postprod-title">Enhance this video</h3>
+    <label class="field">
+      <span class="label">Operation</span>
+      <select id="postprod-op">
+        <option value="upscale">Upscale — add real detail</option>
+        <option value="bgremove">Remove background</option>
+        <option value="subtitles">Transcribe + burn in subtitles</option>
+        <option value="lipsync">Lip-sync a separate voice track</option>
+      </select>
+    </label>
+    <div id="postprod-params"></div>
+    <p id="postprod-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="postprod-cancel" class="btn ghost" type="button">Cancel</button>
+      <button id="postprod-quote" class="btn primary" type="button">Get price</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="app.js"></script>

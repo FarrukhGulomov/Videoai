@@ -27,6 +27,7 @@ import mimetypes
 import pathlib
 import re
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -185,6 +186,56 @@ PRESETS = [
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3"]
 DURATIONS = [4, 6, 8]
+
+
+# ------------------------------------------------------- post-production ops
+#
+# Web equivalents of factory.py's upscale/lipsync/subtitles/bgremove
+# commands. Rates and model ids are read from CONFIG, never duplicated as
+# literals here, so the CLI and the webapp cannot drift on price.
+
+def _postprod_rate(op, params):
+    rates = CONFIG["rates"]
+    if op == "upscale":
+        table = rates["upscale_per_second_usd_by_tier"]
+        tier = params.get("tier")
+        rate = table.get(tier) if tier else None
+        if rate is None:
+            choices = [k for k in table if not k.startswith("_")]
+            raise ValueError(f"Pick a valid output resolution tier: {choices}")
+        if params.get("fps") and int(params["fps"]) >= 60:
+            rate *= 2
+        return CONFIG["models"]["upscale"], rate
+    if op == "lipsync":
+        return CONFIG["models"]["lipsync"], rates["lipsync_per_second_usd"]
+    if op == "subtitles":
+        return CONFIG["models"]["transcribe"], rates["transcription_per_second_usd"]
+    if op == "bgremove":
+        return CONFIG["models"]["bg_remove"], rates["bg_remove_per_second_usd"]
+    raise ValueError(f"Unknown post-production operation '{op}'.")
+
+
+def _postprod_payload(op, file_url, params):
+    """Payload for the ops fal itself runs directly (upscale/lipsync/
+    bgremove). subtitles is handled separately in _run_postprod_job since
+    it needs a local ffmpeg burn-in step after the fal transcription call,
+    not just one fal call."""
+    if op == "upscale":
+        payload = {"video_url": file_url, "model": params.get("model") or "Proteus",
+                   "upscale_factor": float(params.get("factor") or 2)}
+        if params.get("fps"):
+            payload["target_fps"] = int(params["fps"])
+        return payload
+    if op == "lipsync":
+        audio_url = (params.get("audio_url") or "").strip()
+        if not audio_url:
+            raise ValueError("lipsync needs a direct URL to the voice track (audio_url).")
+        return {"video_url": file_url, "audio_url": audio_url,
+                "sync_mode": params.get("sync_mode") or "cut_off"}
+    if op == "bgremove":
+        return {"video_url": file_url, "background_color": params.get("background_color") or "Black",
+                "preserve_audio": bool(params.get("preserve_audio", True))}
+    raise ValueError(f"Unknown post-production operation '{op}'.")
 
 
 # ---------------------------------------------------------------- job storage
@@ -374,6 +425,70 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_i
         _persist(job)
 
 
+def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id):
+    _update(job_id, status="running", stage="Sending to fal.ai…")
+    out_dir = WORK / "postprod"
+    try:
+        if op == "subtitles":
+            payload = {"audio_url": file_url, "task": "transcribe", "chunk_level": "segment"}
+            if params.get("lang"):
+                payload["language"] = params["lang"]
+            _update(job_id, stage="Transcribing…")
+            result = factory.fal_run(model, payload, max_wait=600)
+            chunks = result.get("chunks") or []
+            if not chunks:
+                raise RuntimeError("transcription returned no timed segments")
+
+            out_dir.mkdir(parents=True, exist_ok=True)
+            srt_path = out_dir / f"{job_id}.srt"
+            factory.write_srt(chunks, srt_path)
+            out_path = out_dir / f"{job_id}.mp4"
+            style = params.get("style") or CONFIG["defaults"]["subtitles"]["force_style"]
+            escaped_srt = str(srt_path).replace("\\", "\\\\").replace(":", "\\:")
+
+            _update(job_id, stage="Burning captions in…")
+            res = subprocess.run(
+                ["ffmpeg", "-y", "-i", file_url,
+                 "-vf", f"subtitles={escaped_srt}:force_style='{style}'",
+                 "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+                 "-c:a", "copy", str(out_path)],
+                capture_output=True, text=True, check=False,
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"ffmpeg subtitle burn-in failed: {res.stderr[-500:]}")
+            outputs = [f"/media/postprod/{job_id}.mp4"]
+            request_id = result.get("_request_id")
+        else:
+            payload = _postprod_payload(op, file_url, params)
+            _update(job_id, stage="Processing…")
+            result = factory.fal_run(model, payload, max_wait=1800)
+            url = factory.first_url(result, "video", "videos")
+            if not url:
+                raise RuntimeError("no output returned")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            factory.download(url, out_dir / f"{job_id}.mp4")
+            outputs = [f"/media/postprod/{job_id}.mp4"]
+            request_id = result.get("_request_id")
+
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": op, "model": model,
+            "cost_usd": cost, "status": "success",
+            "output_url": outputs[0] if outputs else None, "request_id": request_id,
+        })
+        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} postprod {op}")
+        job = _update(job_id, status="done", stage="Done", outputs=outputs,
+                      request_id=request_id, credit_deducted=deducted)
+        _persist(job)
+    except Exception as exc:  # noqa: BLE001
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": op, "status": "failed",
+            "error": str(exc)[:1500], "cost_usd": 0,
+        })
+        job = _update(job_id, status="error", stage="Failed",
+                      error=friendly_error(exc), error_raw=str(exc)[:1500])
+        _persist(job)
+
+
 # ------------------------------------------------------------------- handler
 
 class Handler(BaseHTTPRequestHandler):
@@ -460,6 +575,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._generate_image(body)
             if path == "/api/generate/video":
                 return self._generate_video(body)
+            if path == "/api/postprod/quote":
+                return self._quote_postprod(body)
+            if path == "/api/postprod/run":
+                return self._generate_postprod(body)
             return self._send(404, {"error": "Unknown endpoint."})
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
@@ -494,12 +613,20 @@ class Handler(BaseHTTPRequestHandler):
                 "rate": rates[CONFIG["models"]["final_take_alt_seedance"]],
             },
         ]
+        upscale_tiers = {k: v for k, v in CONFIG["rates"]["upscale_per_second_usd_by_tier"].items()
+                         if not k.startswith("_")}
         return {
             "models": models,
             "presets": PRESETS,
             "aspect_ratios": ASPECT_RATIOS,
             "durations": DURATIONS,
             "image_cost": CONFIG["rates"]["still_per_image_usd"],
+            "postprod": {
+                "upscale_tiers": upscale_tiers,
+                "lipsync_rate": CONFIG["rates"]["lipsync_per_second_usd"],
+                "subtitles_rate": CONFIG["rates"]["transcription_per_second_usd"],
+                "bgremove_rate": CONFIG["rates"]["bg_remove_per_second_usd"],
+            },
         }
 
     def _health_payload(self):
@@ -682,6 +809,60 @@ class Handler(BaseHTTPRequestHandler):
             args=(job["id"], prompt, image_url, seconds, model, rate,
                   bool(body.get("audio", CONFIG["defaults"]["final_audio"])),
                   body.get("end_image_url"), charge_user_id),
+            daemon=True,
+        ).start()
+        return self._send(202, job)
+
+    # -- post-production ---------------------------------------------------
+
+    def _quote_postprod(self, body):
+        op = body.get("op")
+        file_url = (body.get("file_url") or "").strip()
+        if not file_url:
+            raise ValueError("Pick a finished video first.")
+        model, rate = _postprod_rate(op, body)
+        try:
+            duration = factory.probe_duration(file_url)
+        except SystemExit:
+            raise ValueError("Could not read that file's duration — is the URL still reachable?") from None
+        cost = round(rate * duration, 4)
+        return self._send(200, {
+            "op": op, "model": model, "duration_seconds": round(duration, 2),
+            "rate": rate, "cost_usd": cost,
+            "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
+        })
+
+    def _generate_postprod(self, body):
+        """Paid (except a $0 estimate is still possible for a near-zero-length
+        clip). Same gate as image/video: the caller must echo back the exact
+        cost this endpoint just quoted, or nothing runs."""
+        op = body.get("op")
+        file_url = (body.get("file_url") or "").strip()
+        if not file_url:
+            raise ValueError("Pick a finished video first.")
+        model, rate = _postprod_rate(op, body)
+        try:
+            duration = factory.probe_duration(file_url)
+        except SystemExit:
+            raise ValueError("Could not read that file's duration — is the URL still reachable?") from None
+        cost = round(rate * duration, 4)
+
+        approved = body.get("approved_cost")
+        if approved is None:
+            raise ValueError(f"This costs ${cost}. Confirm the cost to continue.")
+        if abs(float(approved) - cost) > 0.005:
+            raise ValueError(
+                f"The price changed to ${cost} since it was quoted. "
+                "Nothing was charged — re-confirm to continue."
+            )
+
+        owner, charge_user_id = self._require_funded_user(cost)
+
+        job = _new_job("postprod", owner, op=op, model=model, cost_usd=cost,
+                       duration_seconds=round(duration, 2))
+        threading.Thread(
+            target=_run_postprod_job,
+            args=(job["id"], op, file_url, body, model, cost, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)

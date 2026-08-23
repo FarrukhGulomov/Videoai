@@ -47,6 +47,24 @@ The main flow is four steps on one page:
 
 `History` collects everything generated in the workspace.
 
+### Post-production — "Enhance…"
+
+Any finished video (in step 4 or in History) has an **Enhance…** button
+that opens the same four paid ops `scripts/factory.py` exposes on the CLI:
+
+- **Upscale** — real detail-adding upscale (Topaz), priced by output tier.
+- **Remove background** — cut the subject out of its plate.
+- **Transcribe + burn in subtitles** — timed captions, auto-detected
+  language by default.
+- **Lip-sync a separate voice track** — needs a direct URL to the voice
+  file; there's no upload widget for it yet, so paste a link.
+
+Same money gate as image/video generation: a quote first, a confirmation
+dialog showing the exact price, then the paid call — never the reverse.
+Results land in History as an "Enhanced (op)" card once done. Multi-shot
+continuity (`final --shots-json`) is a CLI-only, authoring-time decision
+(you choose it before generating, not after) and isn't exposed here.
+
 ## How the money gate works
 
 The CLI refuses to run a paid call unless `--i-approve-cost` matches the real
