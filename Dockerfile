@@ -20,9 +20,14 @@ RUN useradd --create-home --uid 1000 videofactory \
     && chown -R videofactory:videofactory /app
 USER videofactory
 
-# work/ (generated media, job history, ledger) should be a mounted volume
-# in production so it survives a container restart/redeploy.
-VOLUME ["/app/work"]
+# work/ (generated media, job history, ledger) should survive a restart/
+# redeploy. No `VOLUME` instruction here: Docker's own VOLUME directive
+# is a plain `docker run -v` hint that plenty of platform builders don't
+# support (Railway's rejects the image outright: "docker VOLUME ... is
+# not supported, use Railway Volumes") -- the actual persistent mount is
+# always configured on the platform side (docker run -v, a Railway
+# Volume mounted at /app/work, a Kubernetes PVC, etc.), which needs no
+# corresponding line in the Dockerfile to work.
 
 EXPOSE 8000
 
@@ -30,4 +35,9 @@ EXPOSE 8000
 # network namespace is not the public internet. Put a reverse proxy (with
 # TLS) in front and/or set WEBAPP_BASIC_AUTH_USER/PASS before exposing the
 # host port publicly; see DEPLOY.md.
-CMD ["python3", "webapp/server.py", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --port is deliberately omitted: webapp/server.py defaults it from the
+# PORT env var (falling back to 8000 if unset), which is what lets this
+# same image work unmodified on PaaS platforms (Railway, etc.) that
+# assign a container's port at runtime.
+CMD ["python3", "webapp/server.py", "--host", "0.0.0.0"]

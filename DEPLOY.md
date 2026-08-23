@@ -39,13 +39,48 @@ docker run -d \
   probing) and runs as a non-root user; nothing else is installed — this
   project is stdlib-only Python, so there's no `pip install` step.
 - **Note:** this Dockerfile was written and the exact command it runs
-  (`python3 webapp/server.py --host 0.0.0.0 --port 8000`) was verified
-  directly on the host, but the image itself has not been built inside a
-  container in this environment (no Docker daemon was available here).
-  Build and smoke-test it (`curl localhost:8000/api/health`) once in your
-  own environment before relying on it.
+  (`python3 webapp/server.py --host 0.0.0.0`, which listens on the `PORT`
+  env var if set, else 8000) was verified directly on the host, but the
+  image itself has not been built inside a container in this environment
+  (no Docker daemon was available here). Build and smoke-test it
+  (`curl localhost:8000/api/health`) once in your own environment before
+  relying on it.
 
-## 3. Run it: systemd (no Docker)
+## 3. Run it: Railway
+
+Railway builds straight from the repo's `Dockerfile` — no changes needed
+to deploy this repo as-is.
+
+1. **New Project → Deploy from GitHub repo**, pick this repo and the
+   branch that has the merged changes (the repo's default branch).
+   Railway detects the `Dockerfile` automatically (confirmed by the
+   `railway.json` in the repo root, which pins `builder: DOCKERFILE`
+   explicitly rather than relying on auto-detection).
+2. **Variables tab** — add at minimum:
+   - `FAL_KEY` = your real fal.ai key.
+   - `WEBAPP_BASIC_AUTH_USER` / `WEBAPP_BASIC_AUTH_PASS` — set both, since
+     this will be reachable from the public internet the moment it
+     deploys (see "Access control" in webapp/README.md). Skip these only
+     if you're setting up full Supabase multi-user mode instead.
+   - Do **not** set `PORT` yourself — Railway injects it automatically,
+     and `webapp/server.py` already reads it (`--host 0.0.0.0` is baked
+     into the Dockerfile's `CMD`, so nothing else to configure).
+3. **Settings → Networking → Generate Domain** to get a public
+   `*.up.railway.app` URL (Railway terminates TLS for you here — you do
+   *not* need the Caddy/nginx step below on Railway specifically).
+4. **Settings → Volumes → New Volume**, mount path `/app/work`. Without
+   this, job history and generated media are wiped on every redeploy. The
+   Dockerfile deliberately has no `VOLUME` instruction (Railway's builder
+   rejects images that declare one — "docker VOLUME ... is not
+   supported, use Railway Volumes"); the mount is entirely a platform-side
+   step, this one.
+5. Deploy. Watch the build logs for the `pip`-free build finishing (just
+   `apt-get install ffmpeg`, no dependency resolution to go wrong) and
+   then `Video Factory running at http://0.0.0.0:<port>` in the runtime
+   logs.
+6. Verify with §6 below, using your `*.up.railway.app` URL.
+
+## 4. Run it: systemd (no Docker)
 
 ```ini
 # /etc/systemd/system/videofactory.service
@@ -78,7 +113,10 @@ sudo systemctl enable --now videofactory
 sudo journalctl -u videofactory -f     # logs
 ```
 
-## 4. Put a real TLS-terminating reverse proxy in front
+## 5. Put a real TLS-terminating reverse proxy in front
+
+Skip this section on Railway — its "Generate Domain" step already
+terminates TLS for you. It applies to a bare VM/systemd deployment (§4).
 
 `ThreadingHTTPServer` (what `webapp/server.py` runs) speaks plain HTTP
 only — no TLS, no HTTP/2, no built-in rate limiting. Terminate TLS and
@@ -103,7 +141,7 @@ omitted because the server may be running over plain HTTP locally — see
 `_session_cookie_header()` in `webapp/server.py` if you're running
 multi-user mode over HTTPS.
 
-## 5. Verify after deploying
+## 6. Verify after deploying
 
 ```bash
 curl -u admin:yourpassword https://your-domain.com/api/health
@@ -123,7 +161,7 @@ with a 1-image count) to confirm the deployed server can actually reach
 fal.ai — a firewall or egress rule blocking outbound HTTPS is the most
 common deployment-specific failure mode this checklist can't catch for you.
 
-## 6. What's already handled, what isn't
+## 7. What's already handled, what isn't
 
 Handled by the codebase itself, not something you need to configure:
 
