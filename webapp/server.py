@@ -575,6 +575,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._auth_login(body)
             if path == "/api/auth/logout":
                 return self._auth_logout()
+            if path == "/api/auth/oauth-callback":
+                return self._auth_oauth_callback(body)
             if path == "/api/quote":
                 return self._quote(body)
             if path == "/api/generate/image":
@@ -637,11 +639,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _health_payload(self):
         import os
-        return {
+        payload = {
             "fal_key_configured": bool(os.environ.get("FAL_KEY", "").strip()),
             "ffmpeg_available": shutil.which("ffmpeg") is not None,
             "auth_enabled": db.configured(),
         }
+        if db.configured():
+            # Both values are meant to be public -- the anon key is the
+            # same "publishable" key already used for signup/login, and the
+            # project URL is not a secret. Exposed only so the browser can
+            # build the Supabase OAuth redirect itself; SUPABASE_SERVICE_ROLE_KEY
+            # never appears in any response.
+            payload["oauth"] = {
+                "supabase_url": os.environ.get("SUPABASE_URL", "").rstrip("/"),
+                "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
+            }
+        return payload
 
     # -- auth --------------------------------------------------------------
 
@@ -710,6 +723,25 @@ class Handler(BaseHTTPRequestHandler):
         user = result.get("user") or {}
         return self._send(200, {"user": {"email": user.get("email", email)}},
                           extra_headers=[_session_cookie_header(token, result.get("expires_in", 3600))])
+
+    def _auth_oauth_callback(self, body):
+        """Completes Google (or any future Supabase OAuth provider) sign-in.
+        The browser lands here after Supabase's own /auth/v1/authorize
+        redirect returns an access_token in the URL fragment -- the token is
+        never trusted blindly, db.get_user() re-validates it against
+        Supabase itself before a session cookie is ever set, exactly like
+        every other path that ends in _session_cookie_header."""
+        if not db.configured():
+            raise ValueError("Sign-in is not enabled on this server.")
+        token = (body.get("access_token") or "").strip()
+        if not token:
+            raise ValueError("Missing access token.")
+        user = db.get_user(token)
+        if not user or not user.get("id"):
+            raise ValueError("Could not verify that sign-in. Try again.")
+        expires_in = int(body.get("expires_in") or 3600)
+        return self._send(200, {"user": {"email": user.get("email")}},
+                          extra_headers=[_session_cookie_header(token, expires_in)])
 
     def _auth_logout(self):
         return self._send(200, {"ok": True}, extra_headers=[_clear_cookie_header()])

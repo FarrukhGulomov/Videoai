@@ -33,17 +33,65 @@ exactly as it did before this existed — no login, one shared workspace.
 4. Restart the server. `/api/health`'s `auth_enabled` flag reports whether
    the UI is in multi-user mode.
 
+#### Google sign-in (optional, needs multi-user mode)
+
+The UI shows a "Continue with Google" button automatically whenever
+`SUPABASE_URL`/`SUPABASE_ANON_KEY` are set (`/api/health`'s `oauth` field).
+Clicking it navigates to Supabase's own `/auth/v1/authorize?provider=google`
+and redirects back to the app with a session — verified server-side by
+`_auth_oauth_callback` (`webapp/server.py`) before a cookie is ever set,
+the same as every other sign-in path.
+
+The button appearing does **not** mean Google sign-in actually works yet —
+that also requires, done once in the Supabase dashboard:
+
+1. A Google Cloud OAuth client (Console → APIs & Services → Credentials →
+   "OAuth client ID", type Web application), with your Supabase project's
+   callback URL (`https://<ref>.supabase.co/auth/v1/callback`) added as an
+   authorized redirect URI.
+2. That client's ID and secret entered under Supabase → Authentication →
+   Providers → Google, toggled on.
+3. Your app's real URL added to Supabase → Authentication → URL
+   Configuration → Redirect URLs, or the callback is rejected.
+
+None of this can be done from the codebase or by Claude — it's an account
+-level setup step for whoever owns the Supabase project.
+
+#### Telegram sign-in
+
+Not built yet. It needs a real Telegram bot (created via @BotFather) before
+any code can be written against it — the bot's username and token are
+required to render the Telegram Login Widget and verify its signed payload.
+Ask for this once you have a bot; there is no placeholder UI for it here on
+purpose, since a login button that doesn't work is worse than no button.
+
+### Language
+
+Uzbek, Russian, and English, switchable from the top bar
+(`webapp/static/i18n.js`). Auto-detected from the browser's language on
+first visit, remembered after in `localStorage`. AI-facing prompt text
+(what's actually sent to fal.ai) stays in English regardless of UI
+language — every model this project uses was verified against English
+prompts, and translating the *generation* text is a different, unverified
+claim from translating the *interface* around it.
+
 ## What it does
+
+Deliberately hides the technical decisions (which model, what resolution,
+how many variants) behind sensible defaults — the target user for this UI
+is anyone, including someone who has never generated an AI video before.
+The CLI (`scripts/factory.py`) is where those choices are still exposed
+for anyone who wants them.
 
 The main flow is four steps on one page:
 
-1. **Describe the shot** — pick a preset, edit the text, choose aspect ratio
-   and how many variants. Images are cheap, so the default is 5 (best-of-5,
-   see `fal-master-prompt.md` 2.1).
+1. **Describe the shot** — pick a preset or write your own. Five variants
+   are always generated (best-of-5, see `fal-master-prompt.md` 2.1) and the
+   model/aspect ratio are the server's own defaults — no picker for either.
 2. **Pick the starting frame** — video is always animated from a chosen
    image, never invented from text.
-3. **Describe the motion** — choose model and duration, see the price, and
-   confirm it.
+3. **Describe the motion** (optional) — pick Short/Medium/Long instead of
+   typing a number of seconds, see the price, confirm it.
 4. **Preview and download.**
 
 `History` collects everything generated in the workspace.
@@ -84,7 +132,11 @@ the server quoted.
 
 - `FAL_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are read server-side from the
   environment and never appear in any response. Verified: no endpoint echoes
-  them.
+  them. `SUPABASE_URL` and `SUPABASE_ANON_KEY` **do** appear in
+  `/api/health`'s `oauth` field when multi-user mode is on — deliberately:
+  the anon key is the same publishable key already used for email/password
+  signup, and the browser needs both to build the Google OAuth redirect
+  itself.
 - `/media/` is confined to `work/` — paths are resolved and checked against
   that root, so a crafted URL cannot read elsewhere on disk.
 - Prompts are rendered as DOM text nodes, never `innerHTML`, so user text

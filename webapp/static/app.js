@@ -1,4 +1,8 @@
-/* Video Factory — front end. No framework, no build step. */
+/* Video Factory — front end. No framework, no build step.
+   Simplified deliberately: no model/aspect/variant pickers in the main
+   flow -- the server's own defaults are used, and duration is three plain
+   words instead of a number of seconds. Anyone should be able to use this
+   without knowing what "aspect ratio" or "Kling 3.0" mean. */
 
 (() => {
   "use strict";
@@ -6,8 +10,10 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     config: null,
+    health: null,
     selectedImage: null,
     activePreset: null,
+    selectedSeconds: null,
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
     authMode: "login",
@@ -60,58 +66,113 @@
     container.replaceChildren(node);
   }
 
-  const workingPanel = (label) =>
+  const workingPanel = () =>
     el("div", { class: "state working" },
-      el("p", {}, el("strong", { text: label })),
-      el("p", { class: "muted small", text: "You can leave this tab open — progress keeps updating." }),
+      el("p", {}, el("strong", { text: t("common.working") })),
+      el("p", { class: "muted small", text: t("common.workingHint") }),
       el("div", { class: "bar" }, el("i", {})));
 
   const errorPanel = (message, onRetry) =>
     el("div", { class: "state error" },
-      el("p", {}, el("strong", { text: "That didn't work" })),
+      el("p", {}, el("strong", { text: t("common.errorTitle") })),
       el("p", { class: "muted", text: message }),
       onRetry ? el("p", {}, el("button", {
-        class: "btn ghost small", type: "button", onclick: onRetry, text: "Try again",
+        class: "btn ghost small", type: "button", onclick: onRetry, text: t("common.retry"),
       })) : null);
 
-  const emptyPanel = (title, body) =>
+  const emptyPanel = (titleKey, bodyKey) =>
     el("div", { class: "empty" },
-      el("p", {}, el("strong", { text: title })),
-      el("p", { class: "muted", text: body }));
+      el("p", {}, el("strong", { text: t(titleKey) })),
+      el("p", { class: "muted", text: t(bodyKey) }));
 
   // ---------------------------------------------------------------- boot
 
   async function boot() {
+    wireLangPicker();
+    applyI18n();
+    await handleOAuthRedirect();
+
     try {
       state.config = await api("/api/config");
-    } catch (err) {
-      setPanel($("image-results"), errorPanel(
-        "Could not reach the Video Factory server. Is it still running?", boot));
+    } catch {
+      setPanel($("image-results"), errorPanel(t("common.connectError"), boot));
       return;
     }
     renderPresets();
-    renderSelects();
+    renderDurationChips();
+    wireStaticControls();
     wireAuth();
     wirePostprod();
-    updateImageCost();
-    updateVideoCost();
     checkHealth();
     await checkAuth();
     loadHistory();
   }
 
+  function wireLangPicker() {
+    const picker = $("lang-picker");
+    picker.value = currentLang;
+    picker.addEventListener("change", () => {
+      setLang(picker.value);
+      renderPresets();
+      renderDurationChips();
+      renderAuthBar();
+      if (state.config) updatePostprodParamsIfOpen();
+    });
+  }
+
   async function checkHealth() {
     try {
       const h = await api("/api/health");
+      state.health = h;
       const problems = [];
-      if (!h.fal_key_configured) problems.push("No fal.ai API key configured");
-      if (!h.ffmpeg_available) problems.push("ffmpeg not installed");
+      if (!h.fal_key_configured) problems.push("fal.ai key missing");
+      if (!h.ffmpeg_available) problems.push("ffmpeg missing");
       if (problems.length) {
         const badge = $("health");
         badge.textContent = problems.join(" · ");
         badge.hidden = false;
       }
+      if (h.oauth) {
+        $("auth-google").hidden = false;
+        $("auth-divider").hidden = false;
+      }
     } catch { /* health is advisory only */ }
+  }
+
+  // ------------------------------------------------------- google oauth
+
+  /* Supabase's implicit OAuth flow redirects back here with the session in
+     the URL fragment (#access_token=...), never a query param. We hand that
+     token to our own backend, which verifies it against Supabase itself
+     (never trusted blindly) before setting the same session cookie the
+     email/password flow uses. */
+  async function handleOAuthRedirect() {
+    const hash = window.location.hash;
+    if (!hash || !hash.includes("access_token=")) return;
+    const params = new URLSearchParams(hash.slice(1));
+    const accessToken = params.get("access_token");
+    const expiresIn = params.get("expires_in");
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+    if (!accessToken) return;
+    try {
+      const result = await api("/api/auth/oauth-callback", {
+        method: "POST",
+        body: JSON.stringify({ access_token: accessToken, expires_in: Number(expiresIn) || 3600 }),
+      });
+      if (result.user) toast(`${t("toast.signedIn")}, ${result.user.email}`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  function signInWithGoogle() {
+    if (!state.health || !state.health.oauth) return;
+    const { supabase_url, supabase_anon_key } = state.health.oauth;
+    const redirectTo = window.location.origin + window.location.pathname;
+    const url = `${supabase_url}/auth/v1/authorize?provider=google`
+      + `&redirect_to=${encodeURIComponent(redirectTo)}`
+      + `&apikey=${encodeURIComponent(supabase_anon_key)}`;
+    window.location.href = url;
   }
 
   // ----------------------------------------------------------------- auth
@@ -142,10 +203,10 @@
       bar.replaceChildren(
         el("span", { class: "email", text: state.auth.user.email }),
         balanceText ? el("span", { class: "balance", text: balanceText }) : null,
-        el("button", { class: "btn ghost small", type: "button", text: "Sign out", onclick: signOut }));
+        el("button", { class: "btn ghost small", type: "button", text: t("auth.signout"), onclick: signOut }));
     } else {
       bar.replaceChildren(
-        el("button", { class: "btn ghost small", type: "button", text: "Sign in", onclick: () => openAuthModal("login") }));
+        el("button", { class: "btn ghost small", type: "button", text: t("auth.signin"), onclick: () => openAuthModal("login") }));
     }
   }
 
@@ -155,17 +216,16 @@
   function requireSignedIn() {
     if (!state.auth.enabled) return true;
     if (state.auth.user) return true;
-    toast("Sign in to generate.", true);
+    toast(t("toast.signInFirst"), true);
     openAuthModal("login");
     return false;
   }
 
   function openAuthModal(mode) {
     state.authMode = mode;
-    $("auth-title").textContent = mode === "signup" ? "Create account" : "Sign in";
-    $("auth-submit").textContent = mode === "signup" ? "Create account" : "Sign in";
-    $("auth-toggle").textContent = mode === "signup"
-      ? "Already have an account? Sign in" : "Need an account? Sign up";
+    $("auth-title").textContent = t(mode === "signup" ? "auth.title.signup" : "auth.title.signin");
+    $("auth-submit").textContent = t(mode === "signup" ? "auth.signup" : "auth.signin");
+    $("auth-toggle").textContent = t(mode === "signup" ? "auth.haveAccount" : "auth.needAccount");
     $("auth-error").hidden = true;
     $("auth-modal").hidden = false;
     $("auth-email").focus();
@@ -178,6 +238,7 @@
     $("auth-toggle").addEventListener("click", () =>
       openAuthModal(state.authMode === "signup" ? "login" : "signup"));
     $("auth-submit").addEventListener("click", submitAuth);
+    $("auth-google").addEventListener("click", signInWithGoogle);
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("auth-modal").hidden) closeAuthModal();
     });
@@ -194,7 +255,7 @@
       const path = state.authMode === "signup" ? "/api/auth/signup" : "/api/auth/login";
       const result = await api(path, { method: "POST", body: JSON.stringify({ email, password }) });
       if (!result.user) {
-        errEl.textContent = result.message || "Check your email to confirm your account.";
+        errEl.textContent = result.message || t("auth.checkEmail");
         errEl.hidden = false;
         return;
       }
@@ -203,7 +264,7 @@
       $("auth-password").value = "";
       await checkAuth();
       loadHistory();
-      toast(`Signed in as ${result.user.email}.`);
+      toast(`${t("toast.signedIn")}, ${result.user.email}`);
     } catch (err) {
       errEl.textContent = err.message;
       errEl.hidden = false;
@@ -220,50 +281,68 @@
     loadHistory();
   }
 
+  // -------------------------------------------------------------- presets
+
+  function presetLabel(preset) {
+    return {
+      name: t(`preset.${preset.id}.name`),
+      blurb: t(`preset.${preset.id}.blurb`),
+    };
+  }
+
   function renderPresets() {
+    if (!state.config) return;
     const wrap = $("presets");
-    wrap.replaceChildren(...state.config.presets.map((p) =>
-      el("button", {
-        class: "preset", type: "button", "data-id": p.id,
+    wrap.replaceChildren(...state.config.presets.map((p) => {
+      const label = presetLabel(p);
+      return el("button", {
+        class: "preset" + (state.activePreset === p.id ? " is-active" : ""),
+        type: "button", "data-id": p.id,
         onclick: () => applyPreset(p),
       },
-        el("strong", { text: p.name }),
-        el("span", { text: p.blurb }))));
+        el("strong", { text: label.name }),
+        el("span", { text: label.blurb }));
+    }));
   }
 
   function applyPreset(preset) {
     state.activePreset = preset.id;
     $("video-prompt").value = preset.motion;
-    if (preset.seconds) $("seconds").value = String(preset.seconds);
-    if (preset.model_hint &&
-        state.config.models.some((m) => m.id === preset.model_hint)) {
-      $("model").value = preset.model_hint;
-    }
+    if (preset.seconds) selectDuration(preset.seconds);
     for (const btn of document.querySelectorAll(".preset")) {
       btn.classList.toggle("is-active", btn.dataset.id === preset.id);
     }
-    updateVideoCost();
-    toast(`"${preset.name}" applied to the motion description.`);
+    toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
   }
 
-  function renderSelects() {
-    $("aspect").replaceChildren(...state.config.aspect_ratios.map((a) =>
-      el("option", { value: a, text: a })));
+  // --------------------------------------------------------- static wiring
 
-    $("seconds").replaceChildren(...state.config.durations.map((d) =>
-      el("option", { value: String(d), text: `${d} seconds`, ...(d === 6 ? { selected: "" } : {}) })));
+  const DURATION_LABEL_KEYS = ["step3.duration.short", "step3.duration.medium", "step3.duration.long"];
 
-    $("model").replaceChildren(...state.config.models.map((m) =>
-      el("option", {
-        value: m.id,
-        text: `${m.name} — ${money(m.rate)}/s`,
-        ...(m.default ? { selected: "" } : {}),
+  function renderDurationChips() {
+    if (!state.config) return;
+    const durations = state.config.durations;
+    if (state.selectedSeconds === null || !durations.includes(state.selectedSeconds)) {
+      state.selectedSeconds = durations[Math.floor(durations.length / 2)];
+    }
+    const wrap = $("duration-chips");
+    wrap.replaceChildren(...durations.map((secs, i) =>
+      el("button", {
+        class: "chip" + (secs === state.selectedSeconds ? " is-active" : ""),
+        type: "button", "data-seconds": String(secs),
+        onclick: () => selectDuration(secs),
+        text: t(DURATION_LABEL_KEYS[i] || DURATION_LABEL_KEYS[DURATION_LABEL_KEYS.length - 1]),
       })));
+  }
 
-    $("aspect").addEventListener("change", updateImageCost);
-    $("variants").addEventListener("change", updateImageCost);
-    $("model").addEventListener("change", updateVideoCost);
-    $("seconds").addEventListener("change", updateVideoCost);
+  function selectDuration(secs) {
+    state.selectedSeconds = secs;
+    for (const chip of document.querySelectorAll("#duration-chips .chip")) {
+      chip.classList.toggle("is-active", Number(chip.dataset.seconds) === secs);
+    }
+  }
+
+  function wireStaticControls() {
     $("btn-image").addEventListener("click", generateImages);
     $("btn-video").addEventListener("click", askForVideo);
     $("tab-create").addEventListener("click", () => switchView("create"));
@@ -279,21 +358,11 @@
     if (!create) loadHistory();
   }
 
-  function updateImageCost() {
-    const n = Number($("variants").value);
-    $("image-cost").textContent = money(state.config.image_cost * n);
-  }
-
-  function currentModel() {
-    return state.config.models.find((m) => m.id === $("model").value)
-        || state.config.models[0];
-  }
-
-  function updateVideoCost() {
-    const model = currentModel();
-    const secs = Number($("seconds").value);
-    $("video-cost").textContent = money(model.rate * secs);
-    $("model-note").textContent = model.note;
+  /* The server's own recommended model (marked default:true in /api/config) --
+     never surfaced as a choice. A grandmother doesn't need to know model
+     names exist. */
+  function defaultModel() {
+    return state.config.models.find((m) => m.default) || state.config.models[0];
   }
 
   // ------------------------------------------------------------- polling
@@ -318,7 +387,7 @@
         if (++misses >= 5) {
           clearInterval(timer);
           state.polls.delete(jobId);
-          onDone({ status: "error", error: "Lost contact with the server while generating." });
+          onDone({ status: "error", error: t("common.connectError") });
         }
       }
     }, 2500);
@@ -331,23 +400,19 @@
     if (!requireSignedIn()) return;
     const prompt = $("image-prompt").value.trim();
     if (!prompt) {
-      toast("Describe the shot first.", true);
+      toast(t("toast.describeFirst"), true);
       $("image-prompt").focus();
       return;
     }
 
     const btn = $("btn-image");
     btn.disabled = true;
-    setPanel($("image-results"), workingPanel("Generating images…"));
+    setPanel($("image-results"), workingPanel());
 
     try {
       const job = await api("/api/generate/image", {
         method: "POST",
-        body: JSON.stringify({
-          prompt,
-          count: Number($("variants").value),
-          aspect: $("aspect").value,
-        }),
+        body: JSON.stringify({ prompt }),
       });
       poll(job.id,
         (done) => {
@@ -360,7 +425,7 @@
           loadHistory();
           checkAuth();
         },
-        (p) => setPanel($("image-results"), workingPanel(p.stage || "Working…")));
+        () => setPanel($("image-results"), workingPanel()));
     } catch (err) {
       btn.disabled = false;
       setPanel($("image-results"), errorPanel(err.message, generateImages));
@@ -369,8 +434,8 @@
 
   function renderImageChoices(urls) {
     if (!urls.length) {
-      setPanel($("image-results"), emptyPanel(
-        "No images came back", "The model returned nothing. Try rewording the prompt."));
+      setPanel($("image-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noImages") }))));
       return;
     }
     /* Selection is tracked by index, not by URL: two variants can legitimately
@@ -378,12 +443,11 @@
        both. */
     const cards = urls.map((url, i) => {
       const card = el("div", { class: "card", "data-index": String(i) },
-        el("img", { src: url, alt: `Variant ${i + 1}`, loading: "lazy" }),
+        el("img", { src: url, alt: `${i + 1}`, loading: "lazy" }),
         el("div", { class: "card-body" },
-          el("span", { class: "badge", text: `Variant ${i + 1}` }),
           el("span", { class: "spacer" }),
           el("button", {
-            class: "btn ghost small", type: "button", text: "Use this",
+            class: "btn primary small", type: "button", text: t("step2.choose"),
             onclick: () => selectImage(url, i),
           })));
       return card;
@@ -396,9 +460,11 @@
     state.selectedImage = url;
     for (const card of document.querySelectorAll("#image-results .card")) {
       card.classList.toggle("is-selected", Number(card.dataset.index) === index);
+      const btn = card.querySelector(".btn");
+      if (btn) btn.textContent = Number(card.dataset.index) === index ? t("step2.chosen") : t("step2.choose");
     }
     $("btn-video").disabled = false;
-    $("video-gate").textContent = "Starting frame selected. Describe the motion and generate.";
+    $("video-gate").textContent = t("step3.ready");
     $("step-video").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -408,25 +474,17 @@
      and only then does anything get charged — same gate as the CLI. */
   async function askForVideo() {
     if (!requireSignedIn()) return;
-    const prompt = $("video-prompt").value.trim();
-    if (!prompt) {
-      toast("Describe the motion first.", true);
-      $("video-prompt").focus();
-      return;
-    }
     if (!state.selectedImage) {
-      toast("Pick a starting frame in step 2.", true);
+      toast(t("toast.pickFrame"), true);
       return;
     }
+    const prompt = $("video-prompt").value.trim() || defaultModel().note || "Camera holds steady, natural ambient motion.";
 
     let quote;
     try {
       quote = await api("/api/quote", {
         method: "POST",
-        body: JSON.stringify({
-          model: $("model").value,
-          seconds: Number($("seconds").value),
-        }),
+        body: JSON.stringify({ seconds: state.selectedSeconds }),
       });
     } catch (err) {
       toast(err.message, true);
@@ -434,8 +492,7 @@
     }
 
     $("confirm-cost").textContent = money(quote.cost_usd);
-    $("confirm-detail").textContent =
-      `${currentModel().name} · ${quote.shown_as}`;
+    $("confirm-detail").textContent = "";
     openConfirm(() => startVideo(prompt, quote));
   }
 
@@ -462,7 +519,7 @@
   async function startVideo(prompt, quote) {
     const btn = $("btn-video");
     btn.disabled = true;
-    setPanel($("video-results"), workingPanel("Starting render…"));
+    setPanel($("video-results"), workingPanel());
 
     try {
       const job = await api("/api/generate/video", {
@@ -486,9 +543,9 @@
           renderVideo(done);
           loadHistory();
           checkAuth();
-          toast("Video ready.");
+          toast(t("toast.videoReady"));
         },
-        (p) => setPanel($("video-results"), workingPanel(p.stage || "Rendering…")));
+        () => setPanel($("video-results"), workingPanel()));
     } catch (err) {
       btn.disabled = false;
       setPanel($("video-results"), errorPanel(err.message,
@@ -499,8 +556,8 @@
   function renderVideo(job) {
     const url = (job.outputs || [])[0];
     if (!url) {
-      setPanel($("video-results"), emptyPanel(
-        "No video came back", "The model finished but returned nothing."));
+      setPanel($("video-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noVideo") }))));
       return;
     }
     setPanel($("video-results"),
@@ -509,10 +566,10 @@
         el("div", { class: "card-body" },
           el("span", { class: "badge ok", text: money(job.cost_usd || 0) }),
           el("span", { class: "spacer" }),
-          el("button", { class: "btn ghost small", type: "button", text: "Enhance…",
+          el("button", { class: "btn ghost small", type: "button", text: t("step4.enhance"),
                           onclick: () => openPostprodModal(url) }),
           el("a", { class: "dl", href: url, download: "", target: "_blank",
-                    rel: "noopener", text: "Download" }))));
+                    rel: "noopener", text: t("step4.download") }))));
   }
 
   // ------------------------------------------------------------ history
@@ -520,21 +577,20 @@
   async function loadHistory() {
     const list = $("history-list");
     if (state.auth.enabled && !state.auth.user) {
-      setPanel(list, emptyPanel("Sign in to see your history", "Your generations are private to your account."));
+      setPanel(list, emptyPanel("history.signin.title", "history.signin.body"));
       return;
     }
     let data;
     try {
       data = await api("/api/jobs");
     } catch {
-      setPanel(list, errorPanel("Could not load history.", loadHistory));
+      setPanel(list, errorPanel(t("history.failed"), loadHistory));
       return;
     }
 
     const done = (data.jobs || []).filter((j) => (j.outputs || []).length || j.status === "error");
     if (!done.length) {
-      setPanel(list, emptyPanel("Nothing generated yet",
-        "Images and videos you create will be collected here."));
+      setPanel(list, emptyPanel("history.empty.title", "history.empty.body"));
       return;
     }
 
@@ -543,12 +599,12 @@
       const isVideo = job.kind === "video" || job.kind === "postprod";
       const media = job.status === "error"
         ? el("div", { class: "card-body" },
-            el("span", { class: "badge err", text: "Failed" }))
+            el("span", { class: "badge err", text: t("history.failed") }))
         : isVideo
           ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
           : el("img", { src: url, alt: "", loading: "lazy" });
-      const label = job.kind === "postprod" ? `Enhanced (${job.op})`
-        : job.kind === "video" ? "Video" : "Image";
+      const label = job.kind === "postprod" ? t("step4.enhance")
+        : job.kind === "video" ? t("history.badge.video") : t("history.badge.image");
 
       return el("div", { class: "card" },
         media,
@@ -556,44 +612,41 @@
           el("span", { class: "badge", text: label }),
           el("span", { class: "muted small", text: money(job.cost_usd || 0) }),
           el("span", { class: "spacer" }),
-          isVideo && url ? el("button", { class: "btn ghost small", type: "button", text: "Enhance…",
+          isVideo && url ? el("button", { class: "btn ghost small", type: "button", text: t("step4.enhance"),
                                             onclick: () => openPostprodModal(url) }) : null,
           url ? el("a", { class: "dl", href: url, download: "", target: "_blank",
-                          rel: "noopener", text: "Download" }) : null),
+                          rel: "noopener", text: t("step4.download") }) : null),
         job.status === "error"
           ? el("div", { class: "card-body" },
-              el("span", { class: "muted small", text: job.error || "Failed" }))
+              el("span", { class: "muted small", text: job.error || t("history.failed") }))
           : null);
     }));
   }
 
   // ------------------------------------------------------- post-production
 
+  function upscaleTierOptions() {
+    const tiers = Object.keys(state.config.postprod.upscale_tiers);
+    const labelKeys = ["postprod.upscale.q1", "postprod.upscale.q2", "postprod.upscale.q3"];
+    return tiers.map((tier, i) => ({ tier, label: t(labelKeys[i] || labelKeys[labelKeys.length - 1]) }));
+  }
+
   const POSTPROD_PARAM_BUILDERS = {
-    upscale: () => {
-      const tiers = state.config.postprod.upscale_tiers;
-      return el("div", {},
-        el("label", { class: "field compact" },
-          el("span", { class: "label", text: "Output resolution tier" }),
-          el("select", { id: "pp-tier" },
-            ...Object.entries(tiers).map(([k, rate]) =>
-              el("option", { value: k, text: `${k} — $${rate}/s` })))),
-        el("label", { class: "field compact" },
-          el("span", { class: "label", text: "Upscale factor" }),
-          el("input", { id: "pp-factor", type: "number", value: "2", step: "0.5", min: "1", max: "8" })),
-        el("label", { class: "field compact" },
-          el("span", { class: "label", text: "Target FPS (optional — 60 doubles the price)" }),
-          el("input", { id: "pp-fps", type: "number", placeholder: "leave blank to keep source fps" })));
-    },
+    upscale: () => el("label", { class: "field" },
+      el("span", { class: "label", text: t("postprod.upscale.quality") }),
+      el("select", { id: "pp-tier", class: "big-input" },
+        ...upscaleTierOptions().map(({ tier, label }) => el("option", { value: tier, text: label })))),
     bgremove: () => el("label", { class: "field" },
-      el("span", { class: "label", text: "Background color" }),
-      el("input", { id: "pp-bgcolor", type: "text", value: "Black" })),
+      el("span", { class: "label", text: t("postprod.bgremove.color") }),
+      el("input", { id: "pp-bgcolor", type: "text", value: "Black", class: "big-input" })),
     subtitles: () => el("label", { class: "field" },
-      el("span", { class: "label", text: "Language code (optional)" }),
-      el("input", { id: "pp-lang", type: "text", placeholder: "e.g. ru, uz — leave blank to auto-detect" })),
+      el("span", { class: "label", text: t("postprod.subtitles.lang") }),
+      el("input", { id: "pp-lang", type: "text", class: "big-input",
+                    placeholder: t("postprod.subtitles.langPlaceholder") })),
     lipsync: () => el("label", { class: "field" },
-      el("span", { class: "label", text: "Voice track URL" }),
-      el("input", { id: "pp-audio-url", type: "url", placeholder: "https://... direct link to the audio file" })),
+      el("span", { class: "label", text: t("postprod.lipsync.audio") }),
+      el("input", { id: "pp-audio-url", type: "url", class: "big-input",
+                    placeholder: t("postprod.lipsync.audioPlaceholder") })),
   };
 
   function renderPostprodParams() {
@@ -601,12 +654,13 @@
     setPanel($("postprod-params"), POSTPROD_PARAM_BUILDERS[op]());
   }
 
+  function updatePostprodParamsIfOpen() {
+    if (!$("postprod-modal").hidden) renderPostprodParams();
+  }
+
   function readPostprodParams(op) {
     if (op === "upscale") {
-      const params = { tier: $("pp-tier").value, factor: Number($("pp-factor").value || 2) };
-      const fps = $("pp-fps").value.trim();
-      if (fps) params.fps = Number(fps);
-      return params;
+      return { tier: $("pp-tier").value, factor: 2 };
     }
     if (op === "bgremove") {
       return { background_color: $("pp-bgcolor").value.trim() || "Black" };
@@ -617,7 +671,7 @@
     }
     if (op === "lipsync") {
       const audioUrl = $("pp-audio-url").value.trim();
-      if (!audioUrl) throw new Error("Paste a direct URL to the voice track first.");
+      if (!audioUrl) throw new Error(t("postprod.error.audioRequired"));
       return { audio_url: audioUrl };
     }
     return {};
@@ -668,14 +722,14 @@
       return;
     }
     closePostprodModal();
-    $("confirm-cost").textContent = quote.shown_as;
-    $("confirm-detail").textContent = `${op} · ${quote.model}`;
+    $("confirm-cost").textContent = money(quote.cost_usd);
+    $("confirm-detail").textContent = "";
     openConfirm(() => runPostprod(op, params, quote));
   }
 
   async function runPostprod(op, params, quote) {
     const fileUrl = state.postprodFileUrl;
-    toast("Starting…");
+    toast(t("toast.starting"));
     try {
       const job = await api("/api/postprod/run", {
         method: "POST",
@@ -686,10 +740,10 @@
           checkAuth();
           loadHistory();
           if (done.status === "error") {
-            toast(done.error || "That enhancement failed.", true);
+            toast(done.error || t("toast.enhanceFailed"), true);
             return;
           }
-          toast("Enhancement ready — see History.");
+          toast(t("toast.enhanceReady"));
         },
         () => {});
     } catch (err) {
