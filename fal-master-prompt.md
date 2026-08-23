@@ -8,6 +8,12 @@ This file is the standing instruction attached to every image and video
 generation. It is not a prompt for one shot; it is the grammar every shot is
 built from.
 
+This file governs the *visual* layer — likeness, motion, camera, model
+choice — once a story is already locked. `story-master-prompt.md` is its
+companion for the *narrative* layer — premise, character, conflict,
+structure — and runs first, before section 1 below has anything to work
+with.
+
 ---
 
 ## 1. The non-negotiables

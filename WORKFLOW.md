@@ -22,6 +22,11 @@ in `project_economics`) and re-plan rather than pushing through.
 
 ## 1. Brief → scenes
 
+Before writing a single scene row, run the premise/character/structure
+checklist in `story-master-prompt.md` §11 — catching a weak premise or a
+missing character dimension here costs nothing; catching it after ten
+shots are generated costs real money.
+
 Write the scene list. One row per shot, `status = 'draft'`, no generation yet.
 
 ```sql
