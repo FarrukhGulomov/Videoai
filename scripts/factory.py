@@ -73,6 +73,19 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def positive_number(value, label):
+    """A count or a duration must be > 0 to mean anything. Passing it
+    through unchecked lets two different bugs happen: `value or default`
+    treats an explicitly-passed 0 the same as "omitted" and silently runs
+    the default instead (a paid call for a duration the caller didn't ask
+    for), and a negative value flows straight into a cost calculation as
+    a negative dollar amount. None (the flag was omitted) is passed
+    through untouched; only an explicit non-positive value dies."""
+    if value is not None and value <= 0:
+        die(f"{label} must be greater than 0, got {value}.")
+    return value
+
+
 def load_config():
     with open(CONFIG_PATH) as fh:
         return json.load(fh)
@@ -360,6 +373,7 @@ def all_urls(result, *keys):
 
 def cmd_still(args, cfg):
     """Rung 1 — the cheap still. Face is locked by the reference images."""
+    positive_number(args.count, "--count")
     refs = list(args.ref or [])
     canonical = cfg.get("identity", {}).get("canonical_face_ref")
     if canonical and not args.no_canonical and canonical not in refs:
@@ -435,6 +449,7 @@ def motion_test_rate(args, cfg):
 def cmd_motion(args, cfg):
     """Rung 2 — the Lite motion test. Start frame is mandatory."""
     model, rate = motion_test_rate(args, cfg)
+    positive_number(args.seconds, "--seconds")
     seconds = args.seconds or cfg["defaults"]["motion_test_duration"]
     cost = round(rate * seconds, 4)
 
@@ -487,9 +502,11 @@ def final_take_rate(args, cfg):
 
 def cmd_cost(args, cfg):
     if args.rung == 1:
-        total = cfg["rates"]["still_per_image_usd"] * (args.count or 1)
-        emit({"rung": 1, "images": args.count or 1, "cost_usd": round(total, 4)})
+        positive_number(args.count, "--count")
+        total = cfg["rates"]["still_per_image_usd"] * args.count
+        emit({"rung": 1, "images": args.count, "cost_usd": round(total, 4)})
         return
+    positive_number(args.seconds, "--seconds")
     if args.rung == 2:
         _, rate = motion_test_rate(args, cfg)
     else:
@@ -517,6 +534,9 @@ def parse_shots(raw):
     for i, s in enumerate(shots):
         if not isinstance(s, dict) or "prompt" not in s or "duration" not in s:
             die(f"shot #{i + 1} in --shots-json is missing 'prompt' or 'duration'")
+        duration = s["duration"]
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+            die(f"shot #{i + 1} in --shots-json has an invalid 'duration' (must be a positive number): {duration!r}")
     return shots
 
 
@@ -533,6 +553,7 @@ def cmd_final(args, cfg):
     else:
         if not args.motion or not args.seconds:
             die("either both --motion and --seconds, or --shots-json, is required")
+        positive_number(args.seconds, "--seconds")
         seconds = args.seconds
         motion_desc = args.motion
 
