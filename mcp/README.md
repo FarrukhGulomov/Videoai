@@ -83,19 +83,32 @@ care which client is driving it, the protocol is the same either way.
 
 ## The tools
 
-Nine tools, prefixed `video_factory_` for discoverability:
+Eleven tools, prefixed `video_factory_` for discoverability:
 
 | Tool | Costs money? | What it does |
 |---|---|---|
-| `video_factory_get_info` | No | Presets, current pricing, valid durations. Call this first. |
+| `video_factory_get_info` | No | Presets, every available model (with its tier and price), valid durations. Call this first. |
 | `video_factory_quote_images` | No | Prices generating starting-image variants. |
 | `video_factory_create_images` | **Yes** | Generates them. Requires `approved_cost` from the quote. |
-| `video_factory_quote_video` | No | Prices animating a chosen image. |
+| `video_factory_quote_video` | No | Prices animating a chosen image with a chosen model (`model` is optional -- omit for the default, cheapest full-quality option; pass the exact id from `get_info` to reach a pricier "top quality" model). |
 | `video_factory_create_video` | **Yes** | Generates the video. Requires `approved_cost` from the quote. |
 | `video_factory_quote_enhancement` | No | Prices upscale / bgremove / subtitles / lipsync on an existing video. |
 | `video_factory_enhance_video` | **Yes** | Runs it. Requires `approved_cost` from the quote. |
+| `video_factory_quote_avatar` | No | Prices turning a photo + a voice-track URL into a new talking-head video (OmniHuman). |
+| `video_factory_create_talking_avatar` | **Yes** | Generates it. Requires `approved_cost` from the quote. |
 | `video_factory_check_job` | No | Polls a job that's still running. |
 | `video_factory_list_my_videos` | No | Recent history. |
+
+### Picking a model
+
+`video_factory_get_info` lists every video model with a `tier`: `budget`
+(LTX-2.3, cheapest), `standard` (Kling 3.0 -- the default if `model` is
+omitted -- and Veo 3.1), and `premium` (Seedance 2.0, FLUX 3, Seedance
+2.5). The premium tier is a genuine, often 2-4x price jump over the
+default, not a marketing label -- only reach for it when a user has said
+quality matters more than cost. Seedance 2.5 additionally only supports
+16:9 shots (the webapp/CLI both refuse to run it otherwise, since its
+price is a 16:9-only approximation of fal's real per-request cost).
 
 ### The money gate, one more time
 

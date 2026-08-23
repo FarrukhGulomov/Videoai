@@ -18,6 +18,10 @@ Usage:
   factory.py cost    --seconds 8 --rung 3
   factory.py final   --scene-id S --start-frame URL --motion "..." --seconds 8 \
                      --i-approve-cost 1.20
+  factory.py final   --scene-id S --start-frame URL --motion "..." --seconds 6 \
+                     --model bytedance/seedance-2.5/image-to-video --i-approve-cost 2.84  # top-quality tier
+  factory.py avatar  --scene-id S --image work/refs/face.jpg --audio work/voice/03.wav \
+                     --i-approve-cost 0.65   # photo + voice track -> new talking video (OmniHuman)
   factory.py fetch   --url URL --out work/clips/03.mp4
   factory.py probe   --file work/clips/03.mp4
   factory.py frames  --file work/clips/03.mp4 --count 3 --out work/qc/S03
