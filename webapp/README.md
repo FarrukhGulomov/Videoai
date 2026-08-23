@@ -13,6 +13,24 @@ python3 webapp/server.py      # http://127.0.0.1:8000
 No install step, no dependencies — stdlib only, same constraint as the CLI.
 `--port` and `--host` are available.
 
+### Access control (recommended before exposing this on a real server)
+
+Single-tenant mode (the default — no `SUPABASE_*` set) has no login at all;
+anyone who can reach the port can generate against your `FAL_KEY` and read
+your job history. Set both of these to require HTTP Basic Auth on every
+request:
+
+```bash
+export WEBAPP_BASIC_AUTH_USER=admin
+export WEBAPP_BASIC_AUTH_PASS='a long random password'
+```
+
+Off by default (leave both unset for local use — identical to before this
+existed). The server prints a warning at startup if it's bound to a
+non-local address with neither Basic Auth nor multi-user mode configured.
+Multi-user mode has its own per-account auth and doesn't need this, but
+Basic Auth is honoured on top of it either way if both are set.
+
 ### Multi-user mode (optional)
 
 Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` (plus `SUPABASE_SERVICE_ROLE_KEY`
@@ -156,6 +174,32 @@ the server quoted.
   `approved_cost` must match the server-quoted price before a paid call is
   even attempted. The credit-balance check in multi-user mode is a second,
   independent gate on top of it, not a replacement.
+- **Every client-supplied URL that reaches disk or a subprocess is validated
+  at the API boundary.** `image_url`, `end_image_url`, each `refs` entry
+  (image generation), and `file_url` (post-production) must be `http://`,
+  `https://`, or (for image refs only) a self-contained `data:` URI — never
+  a local path. Without this a request could hand `resolve_image()` /
+  `fal_upload()` a path like `../.env` and have the server upload that file's
+  *contents* to fal.ai storage on the caller's behalf, or hand
+  `probe_duration()` an internal/file URL for `ffprobe`/`ffmpeg` to fetch
+  (SSRF). `_require_public_url()` in `webapp/server.py` is the one place
+  this is enforced; every endpoint that accepts a URL calls it before the
+  value goes anywhere near `factory.py`.
+- **The subtitles `style` param is checked against an allowlist**
+  (`SAFE_FFMPEG_STYLE` in `webapp/server.py`) before being embedded in the
+  `ffmpeg -vf "subtitles=...:force_style='{style}'"` argument. It's
+  unescaped in that filtergraph, so a stray `'` could otherwise break out of
+  the quoted literal and inject extra filtergraph directives — checked
+  against a whitelist rather than escaped, since ffmpeg's own filtergraph
+  escaping rules are easy to get subtly wrong.
+- **Background job threads catch `SystemExit`, not just `Exception`.**
+  `factory.py`'s CLI-oriented `die()` (reused here for payload validation,
+  e.g. an end-frame on a model that doesn't support one) calls `sys.exit()`,
+  which raises `SystemExit` — a `BaseException`, not an `Exception`. Before
+  this fix, hitting `die()` from inside `_run_image_job` / `_run_video_job`
+  / `_run_postprod_job` silently killed the daemon thread and left the job
+  stuck at `status="running"` forever with nothing shown to the user. All
+  three now catch `(Exception, SystemExit)` and resolve to `status="error"`.
 
 ## Deliberate limits
 
@@ -166,10 +210,16 @@ an MVP, not a finished product:
 - **No self-serve payments.** Credits are granted by an admin running
   `supabase_client.record_spend()` or a SQL insert by hand. See
   `docs/startup-strategy.md` for the phased plan toward Payme/Click.
-- **No atomic balance updates.** `record_spend()` reads the balance, then
-  writes it back — two round trips, not one SQL statement. Fine for an MVP's
-  low concurrency per user; a `SECURITY DEFINER` Postgres function is the
-  fix if it ever becomes a real race.
+- **No atomic balance updates, in two places.** `record_spend()` reads the
+  balance then writes it back (two round trips, not one SQL statement), and
+  separately `_require_funded_user()` checks the balance *before* a
+  generation runs while the actual deduction happens after it succeeds —
+  two concurrent requests from the same account can both pass the
+  pre-check against the same starting balance and spend past it. Fine for
+  an MVP's low concurrency per user; the real fix for both is the same one:
+  a single `SECURITY DEFINER` Postgres function that checks-and-deducts
+  atomically in one round trip, called instead of the current
+  read-then-write in `supabase_client.py`.
 - **No password reset / email verification UI.** Whatever your Supabase
   project's auth settings do (e.g. requiring email confirmation) is what
   happens — the app surfaces Supabase's own message but adds no flow of its
@@ -180,4 +230,5 @@ an MVP, not a finished product:
   do not exist yet.
 - **Single-tenant mode is still the default.** Leave the `SUPABASE_*`
   variables unset and none of the above applies — the original one-workspace
-  behavior is unchanged.
+  behavior is unchanged. It also has no login of its own — see "Access
+  control" above before putting it on a public server.

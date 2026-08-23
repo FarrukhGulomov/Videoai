@@ -20,10 +20,13 @@ Run:  python3 webapp/server.py [--port 8000]
 """
 
 import argparse
+import base64
+import hmac
 import http.cookies
 import importlib.util
 import json
 import mimetypes
+import os
 import pathlib
 import re
 import shutil
@@ -106,6 +109,41 @@ def _clear_cookie_header():
     return ("Set-Cookie", f"{SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")
 
 
+def _basic_auth_credentials():
+    """Optional deployment-time access gate: set WEBAPP_BASIC_AUTH_USER
+    and WEBAPP_BASIC_AUTH_PASS to require HTTP Basic Auth on every
+    request. Off by default (both unset), matching the existing local
+    single-tenant behaviour with zero config changes. This is the
+    recommended way to put single-tenant mode (no Supabase) behind a
+    lock when exposing it on a public server -- multi-user mode has its
+    own per-account auth and doesn't need this, but it's honoured either
+    way if set."""
+    user = os.environ.get("WEBAPP_BASIC_AUTH_USER", "")
+    pw = os.environ.get("WEBAPP_BASIC_AUTH_PASS", "")
+    if user and pw:
+        return user, pw
+    return None
+
+
+def _require_public_url(value, field_name, allow_data=False):
+    """Boundary validation for every URL a client can hand us that later
+    reaches resolve_image()/fal_upload() (which reads local files by
+    path) or probe_duration()/ffmpeg (which shell out to fetch whatever
+    it's given). Without this, a client could pass a local path (e.g.
+    "../.env") or an internal address and have the server read or probe
+    it on their behalf -- a local-file-disclosure / SSRF vector. Public
+    http(s) is always allowed; data: URIs are self-contained (no fetch
+    happens) so they're safe to allow where the caller opts in."""
+    value = (value or "").strip()
+    if not value:
+        raise ValueError(f"{field_name} is required.")
+    schemes = ("http://", "https://") + (("data:",) if allow_data else ())
+    if not value.startswith(schemes):
+        allowed = "a public http(s) URL or a data: URI" if allow_data else "a public http(s) URL"
+        raise ValueError(f"{field_name} must be {allowed}, not a local path.")
+    return value
+
+
 # ------------------------------------------------------------------- presets
 
 # Grounded in fal-master-prompt.md: explicit camera choreography, the
@@ -186,6 +224,14 @@ PRESETS = [
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3"]
 DURATIONS = [4, 6, 8]
+
+# Whitelist for the subtitles "style" param, which is embedded unquoted
+# inside an ffmpeg -vf filtergraph string (force_style='...'). A value
+# with a stray quote could break out of that literal and inject extra
+# filtergraph directives, so this is checked rather than escaped -- ffmpeg's
+# own escaping rules for filtergraphs are notoriously easy to get wrong,
+# and a plain allowlist covers every legitimate ASS/SSA style key=value.
+SAFE_FFMPEG_STYLE = re.compile(r"^[A-Za-z0-9 ,._=&-]+$")
 
 
 # ------------------------------------------------------- post-production ops
@@ -299,6 +345,15 @@ def _update(job_id, **fields):
 def friendly_error(exc):
     """Map raw fal/network failures onto something a non-technical user can
     act on. The raw text is kept separately for the ledger and the console."""
+    if isinstance(exc, SystemExit):
+        # factory.py's CLI-oriented die() raises SystemExit with just an
+        # exit code, not a message -- the real reason was already printed
+        # to this process's stderr by die() itself, so point there instead
+        # of surfacing a bare "1".
+        return (
+            "Generation failed due to an invalid request or a missing "
+            "server configuration. Check the server logs for the exact reason."
+        )
     text = str(exc)
     if "Exhausted balance" in text or "TOP_UP" in text or "User is locked" in text:
         return (
@@ -342,23 +397,27 @@ def _charge(job_id, charge_user_id, cost, note):
 def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
+        # `refs` are client-supplied and already validated as public
+        # http(s)/data URLs by _generate_image -- used as-is, never
+        # resolved against a local path. `canonical` is server-configured
+        # (config.json, a repo-relative path) and is the only ref allowed
+        # to go through the local-file upload path.
         canonical = CONFIG.get("identity", {}).get("canonical_face_ref")
-        all_refs = list(refs or [])
-        if canonical and canonical not in all_refs and (ROOT / canonical).exists():
-            all_refs.insert(0, canonical)
+        image_urls = list(refs or [])
+        if canonical and (ROOT / canonical).exists():
+            canonical_url = factory.resolve_image(str(ROOT / canonical))
+            if canonical_url not in image_urls:
+                image_urls.insert(0, canonical_url)
 
-        model = CONFIG["models"]["still_edit"] if all_refs else CONFIG["models"]["still"]
+        model = CONFIG["models"]["still_edit"] if image_urls else CONFIG["models"]["still"]
         payload = {
             "prompt": prompt,
             "num_images": count,
             "aspect_ratio": aspect,
         }
-        if all_refs:
+        if image_urls:
             _update(job_id, stage="Uploading reference images…")
-            payload["image_urls"] = [
-                factory.resolve_image(str(ROOT / r) if not r.startswith(("http", "data:")) else r)
-                for r in all_refs
-            ]
+            payload["image_urls"] = image_urls
 
         _update(job_id, stage="Generating variants…")
         result = factory.fal_run(model, payload)
@@ -376,7 +435,13 @@ def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
         job = _update(job_id, status="done", stage="Done", outputs=urls,
                       request_id=result.get("_request_id"), credit_deducted=deducted)
         _persist(job)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the user, logged raw
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - surfaced to the user, logged raw
+        # SystemExit must be caught explicitly: factory.py's die() (called
+        # by resolve_image/fal_upload/build_video_payload/fal_key on any
+        # bad input) raises it via sys.exit(), and SystemExit inherits
+        # from BaseException, not Exception -- a bare `except Exception`
+        # here lets it escape this daemon thread silently, leaving the
+        # job stuck at status="running" forever with no error surfaced.
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 1, "prompt": prompt,
             "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
@@ -414,7 +479,7 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_i
                       outputs=[url] if url else [],
                       request_id=result.get("_request_id"), credit_deducted=deducted)
         _persist(job)
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 3, "model": model,
             "prompt": prompt, "duration_seconds": seconds,
@@ -444,6 +509,8 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
             factory.write_srt(chunks, srt_path)
             out_path = out_dir / f"{job_id}.mp4"
             style = params.get("style") or CONFIG["defaults"]["subtitles"]["force_style"]
+            if not SAFE_FFMPEG_STYLE.fullmatch(style):
+                raise ValueError("Unsupported characters in subtitle style.")
             escaped_srt = str(srt_path).replace("\\", "\\\\").replace(":", "\\:")
 
             _update(job_id, stage="Burning captions in…")
@@ -485,7 +552,7 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
         job = _update(job_id, status="done", stage="Done", outputs=outputs,
                       request_id=request_id, credit_deducted=deducted)
         _persist(job)
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": op, "status": "failed",
             "error": str(exc)[:1500], "cost_usd": 0,
@@ -529,7 +596,39 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routing ---------------------------------------------------------
 
+    def _require_basic_auth(self):
+        """Returns True if the request may proceed. Sends the 401 itself
+        and returns False otherwise. A no-op (always True) unless both
+        WEBAPP_BASIC_AUTH_USER and WEBAPP_BASIC_AUTH_PASS are set."""
+        creds = _basic_auth_credentials()
+        if not creds:
+            return True
+        expected_user, expected_pass = creds
+        header = self.headers.get("Authorization", "")
+        given_user = given_pass = ""
+        if header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(header[6:]).decode("utf-8")
+                given_user, _, given_pass = decoded.partition(":")
+            except Exception:
+                pass
+        if hmac.compare_digest(given_user, expected_user) and hmac.compare_digest(given_pass, expected_pass):
+            return True
+        body = b'{"error": "Authentication required."}'
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Video Factory"')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+        return False
+
     def do_GET(self):
+        if not self._require_basic_auth():
+            return
         path = urllib.parse.urlparse(self.path).path
         try:
             if path == "/api/config":
@@ -566,6 +665,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": friendly_error(exc)})
 
     def do_POST(self):
+        if not self._require_basic_auth():
+            return
         path = urllib.parse.urlparse(self.path).path
         try:
             body = self._read_json()
@@ -638,7 +739,6 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _health_payload(self):
-        import os
         payload = {
             "fal_key_configured": bool(os.environ.get("FAL_KEY", "").strip()),
             "ffmpeg_available": shutil.which("ffmpeg") is not None,
@@ -801,6 +901,7 @@ class Handler(BaseHTTPRequestHandler):
         aspect = body.get("aspect") or CONFIG["defaults"]["aspect_ratio"]
         if aspect not in ASPECT_RATIOS:
             raise ValueError("Unsupported aspect ratio.")
+        refs = [_require_public_url(r, "Reference image", allow_data=True) for r in (body.get("refs") or [])]
 
         cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
         approved = body.get("approved_cost")
@@ -817,7 +918,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         threading.Thread(
             target=_run_image_job,
-            args=(job["id"], prompt, count, aspect, body.get("refs") or [], charge_user_id),
+            args=(job["id"], prompt, count, aspect, refs, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
@@ -828,9 +929,12 @@ class Handler(BaseHTTPRequestHandler):
         prompt = (body.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("Describe the motion before generating.")
-        image_url = (body.get("image_url") or "").strip()
-        if not image_url:
+        if not (body.get("image_url") or "").strip():
             raise ValueError("Pick a starting image first — video is always generated from one.")
+        image_url = _require_public_url(body.get("image_url"), "Starting image", allow_data=True)
+        end_image_url = body.get("end_image_url")
+        if end_image_url:
+            end_image_url = _require_public_url(end_image_url, "End frame image", allow_data=True)
 
         seconds = int(body.get("seconds") or 6)
         if seconds not in DURATIONS:
@@ -861,7 +965,7 @@ class Handler(BaseHTTPRequestHandler):
             target=_run_video_job,
             args=(job["id"], prompt, image_url, seconds, model, rate,
                   bool(body.get("audio", CONFIG["defaults"]["final_audio"])),
-                  body.get("end_image_url"), charge_user_id),
+                  end_image_url, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
@@ -870,9 +974,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _quote_postprod(self, body):
         op = body.get("op")
-        file_url = (body.get("file_url") or "").strip()
-        if not file_url:
-            raise ValueError("Pick a finished video first.")
+        file_url = _require_public_url(body.get("file_url"), "Video file")
         model, rate = _postprod_rate(op, body)
         try:
             duration = factory.probe_duration(file_url)
@@ -890,15 +992,18 @@ class Handler(BaseHTTPRequestHandler):
         clip). Same gate as image/video: the caller must echo back the exact
         cost this endpoint just quoted, or nothing runs."""
         op = body.get("op")
-        file_url = (body.get("file_url") or "").strip()
-        if not file_url:
-            raise ValueError("Pick a finished video first.")
+        file_url = _require_public_url(body.get("file_url"), "Video file")
         model, rate = _postprod_rate(op, body)
         try:
             duration = factory.probe_duration(file_url)
         except SystemExit:
             raise ValueError("Could not read that file's duration — is the URL still reachable?") from None
         cost = round(rate * duration, 4)
+
+        if op == "subtitles":
+            style = body.get("style") or CONFIG["defaults"]["subtitles"]["force_style"]
+            if not SAFE_FFMPEG_STYLE.fullmatch(style):
+                raise ValueError("Unsupported characters in subtitle style.")
 
         approved = body.get("approved_cost")
         if approved is None:
@@ -953,9 +1058,16 @@ def main():
 
     _load_persisted()
 
-    import os
     if not os.environ.get("FAL_KEY", "").strip():
         print("  WARNING: FAL_KEY is not set — the UI will load but generation will fail.")
+    if _basic_auth_credentials():
+        print("  HTTP Basic Auth is ON (WEBAPP_BASIC_AUTH_USER/PASS set).")
+    elif args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            "  WARNING: binding to a non-local address with no access control. "
+            "Set WEBAPP_BASIC_AUTH_USER/WEBAPP_BASIC_AUTH_PASS, put this behind "
+            "a reverse proxy with auth, or run in multi-user (Supabase) mode."
+        )
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"  Video Factory running at http://{args.host}:{args.port}")
