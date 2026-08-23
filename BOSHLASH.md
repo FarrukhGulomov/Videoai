@@ -16,57 +16,42 @@ Bu faylda **faqat siz qiladigan ishlar** bor. Qolgan hamma narsani men qilaman.
 
 ---
 
-## 🚧 To'siq: fal.ai bloklangan
+## ✅ Tarmoq ochildi — endi to'siq bitta: balans
 
-Bu bulutli muhitdan fal.ai domenlariga chiqib bo'lmaydi — tarmoq siyosati
-ularni bloklagan (403). Kalit aybdor emas; so'rov domengacha yetib bormaydi.
+**2026-08-09 da tekshirildi.**
 
-Bloklangan domenlar:
-`fal.ai`, `fal.run`, `queue.fal.run`, `rest.alpha.fal.ai`, `fal.media`, `v3.fal.media`
+| Tekshiruv | Natija |
+|---|---|
+| Tarmoq: `fal.ai`, `fal.run`, `queue.fal.run`, `rest.alpha.fal.ai`, `v3.fal.media` | ✅ Ochiq (403 yo'q) |
+| `FAL_KEY` muhitda bormi | ✅ Bor |
+| Kalit haqiqiymi | ✅ Ha — fal uni tanidi |
+| Rasm/video yasash | ❌ **403 — "User is locked. Reason: Exhausted balance."** |
 
-### Buni siz ochasiz — 8 ta bosish
+Ya'ni: eski to'siq (tarmoq bloki) ketdi, kalit ham to'g'ri. Lekin fal.ai
+akkauntida **pul qolmagan**, shuning uchun akkaunt qulflangan va har qanday
+so'rovni rad etyapti.
 
-1. **https://claude.ai/code** ni oching
-2. Xabar yozadigan katakning **ustidagi qatorda** bulut belgisini toping —
-   unda muhit nomi yozilgan (masalan `Default`). **Bosing.**
-3. Ro'yxatda o'sha muhit ustiga sichqonchani olib boring → o'ng tomonda
-   **tishli g'ildirak** (sozlama) belgisi chiqadi. **Bosing.**
-4. Ochilgan oynada **Network access** degan joyni toping →
-   **Custom** ni tanlang.
-5. **Allowed domains** katagiga quyidagini **to'liq** joylashtiring
-   (har biri alohida qatorda):
+> Eslatma: `fal.media` (apex domen) ulanmaydi, lekin bu muammo emas — u
+> haqiqatda mavjud emas. Fayllar `v3.fal.media` dan keladi, u ishlayapti.
 
-```
-fal.ai
-*.fal.ai
-fal.run
-*.fal.run
-fal.media
-*.fal.media
-```
+### Buni siz ochasiz — 3 ta bosish
 
-6. Pastdagi **"Also include default list of common package managers"**
-   katagiga **belgi qo'ying** ✅ (bu muhim — aks holda GitHub va boshqa
-   kerakli narsalar ishlamay qoladi)
-7. Xuddi shu oynada **Environment variables** katagini toping va
-   quyidagi qatorni qo'shing:
+1. Oching: **https://fal.ai/dashboard/billing**
+2. **Add credit** tugmasini bosing
+3. **$10** yozing va to'lang
 
-```
-FAL_KEY=kalitingiz-shu-yerga
-```
+Pul tushgandan keyin menga **"pul soldim"** deb yozing — men shu yerda,
+shu sessiyada darhol tekshiraman. Yangi sessiya ochish **shart emas**.
 
-8. **Save** / **Update environment** tugmasini bosing
-
-### ⚠️ Keyin nima qilish kerak
-
-O'zgarish **faqat yangi sessiyalarga** ta'sir qiladi. Hozirgi suhbat eski
-qoida bilan ishlayapti — shuning uchun **yangi sessiya oching** (shu
-repozitoriya bilan). Men qilgan ishlarning hammasi git'da saqlangan,
-yangi sessiyada davom ettiramiz.
+> $10 taxminan 60–80 ta arzon harakat testiga yetadi. Birinchi video uchun
+> bu yetarlidan ko'p. Ko'proq solmang.
 
 ---
 
-## 🔑 fal.ai kaliti
+## 🔑 fal.ai kaliti — ✅ bajarilgan
+
+> Kalit allaqachon muhitga `FAL_KEY` sifatida qo'yilgan va ishlayapti.
+> Quyidagi qadamlar faqat kelajakda kalitni almashtirish kerak bo'lsa asqotadi.
 
 ### 1-qadam. Kalit oling
 

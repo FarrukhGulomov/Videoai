@@ -1,25 +1,80 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
+  "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest proven option, matches this user's own Higgsfield clips, strong action/motion/lip-sync). LTX-2.3 for cost-sensitive or long single-take shots (verified cheapest at $0.06/s 1080p, up to 20s in one call, vertical-native -- untested on this project's actual likeness-holding yet, so not a blind default). Veo 3.1 for face-critical calm/dialogue close-ups. Seedance 2.0 only for a hero shot with heavy physics/particle simulation that justifies its price -- never the default.",
+
   "models": {
     "still":        "fal-ai/nano-banana-pro",
     "still_edit":   "fal-ai/nano-banana-pro/edit",
     "motion_test":  "fal-ai/veo3.1/lite/image-to-video",
-    "final_take":   "fal-ai/veo3.1/image-to-video"
+    "final_take":   "fal-ai/kling-video/v3/standard/image-to-video",
+    "final_take_alt_veo":      "fal-ai/veo3.1/image-to-video",
+    "final_take_alt_seedance": "bytedance/seedance-2.0/image-to-video",
+    "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video",
+    "upscale":    "fal-ai/topaz/upscale/video",
+    "lipsync":    "fal-ai/sync-lipsync/v3",
+    "transcribe": "fal-ai/wizper",
+    "bg_remove":  "bria/video/background-removal/v3"
   },
 
   "rates": {
     "still_per_image_usd":       0.15,
     "motion_test_per_second_usd": 0.03,
-    "final_take_per_second_usd":  0.15
+    "final_take_per_second_usd_by_model": {
+      "fal-ai/kling-video/v3/standard/image-to-video": 0.126,
+      "fal-ai/veo3.1/image-to-video": 0.15,
+      "bytedance/seedance-2.0/image-to-video": 0.3024,
+      "fal-ai/ltx-2.3/image-to-video": 0.06,
+      "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing). LTX-2.3's 0.06 is the 1080p tier; 1440p is 0.12 and 4K is 0.24 -- add those as separate model ids (e.g. with a resolution suffix) if a shot needs them, don't silently reuse this rate at a different resolution."
+    },
+    "upscale_per_second_usd_by_tier": {
+      "le720p": 0.01,
+      "upto1080p": 0.02,
+      "above1080p": 0.08,
+      "_note": "fal-ai/topaz/upscale/video, keyed by OUTPUT resolution tier (not input) -- confirmed from that model's own pricing panel on fal.ai. cmd_upscale doubles this automatically for --fps 60+. Some Topaz model variants (e.g. a 'Gaia 2' one) reportedly bill about half this on fal's panel, but the exact enum spelling wasn't confirmed against the live schema so that discount isn't auto-applied -- treat the quoted number as an upper bound if you pick a Gaia-family --model."
+    },
+    "lipsync_per_second_usd": 0.1333,
+    "transcription_per_second_usd": 0.0008,
+    "bg_remove_per_second_usd": 0.0042,
+    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
   },
 
   "defaults": {
     "motion_test_resolution": "720p",
-    "motion_test_duration":   5,
+    "motion_test_duration":   6,
     "motion_test_audio":      false,
     "final_resolution":       "1080p",
-    "aspect_ratio":           "16:9"
+    "final_audio":            true,
+    "aspect_ratio":           "16:9",
+    "kling_cfg_scale": 0.5,
+    "negative_prompt": "slow motion unless explicitly requested, morphing, warping, melting, flickering, frame stutter, unnatural physics, ragdoll glitches, extra limbs, distorted or drifting face, identity change, low detail, compression artifacts, motion smear on the face",
+    "polish": {
+      "grade_filter": "eq=contrast=1.08:saturation=1.15:gamma=0.97,curves=all='0/0 0.22/0.16 0.5/0.5 0.78/0.84 1/1',vignette=PI/6,noise=alls=5:allf=t+u",
+      "smooth_fps": 48,
+      "_note": "Free, local, ffmpeg-only -- no fal cost. Mild filmic S-curve + vignette + fine grain. smooth_fps doubles 24fps source via motion-compensated interpolation when --smooth is passed. --deflicker (also free/local) is a separate flag, not folded into this filter chain."
+    },
+    "subtitles": {
+      "force_style": "FontName=DejaVu Sans,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=40",
+      "_note": "DejaVu Sans is confirmed to render Cyrillic correctly -- verified during the '25 yil' film's manual drawtext burn-in. Keep this font unless a replacement is verified the same way (missing glyphs render as boxes, easy to miss in a quick preview)."
+    }
+  },
+
+  "identity": {
+    "canonical_face_ref": "work/refs/characters/worker.jpg",
+    "note": "canonical_face_ref is auto-prepended to every `still` call's --ref (see cmd_still). It currently points at the 'worker' character below -- switch this value to reuse a different named character as the default for new work.",
+    "characters": {
+      "worker": {
+        "ref": "work/refs/characters/worker.jpg",
+        "source_sheet": "work/refs/characters/worker_source.jpg",
+        "added": "2026-08-21, user-supplied via Google Drive link (drive.google.com file id 10KythdOHP2hnyemcNnL4uZent6BdPcVf), downloaded via mcp__Google_Drive__download_file_content since the domain is proxy-blocked for direct curl",
+        "note": "ref is one panel cropped from a 4-panel AI-generated business-photo sheet (crop=704:384:704:0 on the top-right panel -- the clearest frontal, direct gaze). User's explicit rule: take the FACE STRUCTURE only from the source sheet, not its exact age/wardrobe/expression -- age locked to ~45 per user instruction, overriding whatever age the source image reads as.",
+        "description": "An Uzbek man of approximately 45 years, Central Asian features, short black hair with visible grey at the temples, a trimmed short beard and moustache mixed with grey, a fuller face shape than the previous canonical, brown eyes with fine lines at the outer corners, straight nose, jawline softened by the beard, olive/tan skin tone with natural texture, medium build. Exact same person as the reference image -- preserve precise facial identity, do not reinterpret or stylize the face."
+      },
+      "robot_fight_protagonist": {
+        "ref": "work/stills/scene03_still1_v3.jpg",
+        "note": "The previously canonical face (rung-1 v3 variant from the robot-fight project, session of 2026-08-09). Superseded as the default by 'worker' but kept here in case a later scene needs to reuse it specifically."
+      }
+    }
   },
 
   "budget": {

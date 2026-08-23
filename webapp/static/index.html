@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+<title>Video Factory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%236d5efc'/%3E%3Cpath d='M13 10l9 6-9 6z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div class="brand-text">
+      <strong>Video Factory</strong>
+      <span class="tagline" data-i18n="app.tagline">Suratdan video yasang</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span id="health" class="health" hidden></span>
+    <select id="lang-picker" class="lang-picker" aria-label="Til / Language / Язык">
+      <option value="uz">O'zbek</option>
+      <option value="ru">Русский</option>
+      <option value="en">English</option>
+    </select>
+    <div id="auth-bar" class="auth-bar" hidden></div>
+  </div>
+</header>
+
+<nav class="tabbar">
+  <button id="tab-create" class="tab is-active" type="button" data-i18n="nav.create">Yaratish</button>
+  <button id="tab-history" class="tab" type="button" data-i18n="nav.history">Videolarim</button>
+</nav>
+
+<main>
+  <!-- ============ CREATE ============ -->
+  <section id="view-create" class="view">
+
+    <!-- Step 1 -->
+    <section class="step" aria-labelledby="s1">
+      <div class="step-head">
+        <span class="step-num" data-i18n="step1.badge">1</span>
+        <div>
+          <h2 id="s1" data-i18n="step1.title">Nima haqida video?</h2>
+          <p class="muted" data-i18n="step1.subtitle">Ko'rmoqchi bo'lgan manzarani so'zlar bilan tasvirlab bering</p>
+        </div>
+      </div>
+
+      <span class="chip-label" data-i18n="step1.presets">Tayyor g'oyalar</span>
+      <div id="presets" class="presets" role="group" aria-label="Presets"></div>
+
+      <textarea id="image-prompt" rows="3" class="big-input"
+        data-i18n-placeholder="step1.placeholder"></textarea>
+
+      <button id="btn-image" class="btn primary big" type="button" data-i18n="step1.button">Suratlarni yaratish</button>
+      <p class="hint" data-i18n="step1.hint">Avval bir nechta surat yaratiladi — eng yaxshisini o'zingiz tanlaysiz</p>
+    </section>
+
+    <!-- Step 2 -->
+    <section class="step" aria-labelledby="s2">
+      <div class="step-head">
+        <span class="step-num">2</span>
+        <div>
+          <h2 id="s2" data-i18n="step2.title">Birini tanlang</h2>
+          <p class="muted" data-i18n="step2.subtitle">Video aynan shu suratdan jonlanadi</p>
+        </div>
+      </div>
+      <div id="image-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong data-i18n="step2.empty.title">Hali surat yo'q</strong></p>
+          <p class="muted" data-i18n="step2.empty.body">Yuqorida video haqida yozib, yaratishni bosing</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3 -->
+    <section class="step" id="step-video" aria-labelledby="s3">
+      <div class="step-head">
+        <span class="step-num">3</span>
+        <div>
+          <h2 id="s3" data-i18n="step3.title">Endi jonlantiramiz</h2>
+          <p class="muted" data-i18n="step3.subtitle">Suratda nima harakat qilishini yozing (ixtiyoriy)</p>
+        </div>
+      </div>
+
+      <textarea id="video-prompt" rows="2" class="big-input"
+        data-i18n-placeholder="step3.placeholder"></textarea>
+
+      <div class="chip-row">
+        <span class="chip-label" data-i18n="step3.duration">Davomiyligi</span>
+        <div id="duration-chips" class="chips"></div>
+      </div>
+
+      <button id="btn-video" class="btn primary big" type="button" disabled data-i18n="step3.button">Video yaratish</button>
+      <p id="video-gate" class="hint" data-i18n="step3.gate">Avval 2-qadamda suratni tanlang</p>
+    </section>
+
+    <!-- Step 4 -->
+    <section class="step" aria-labelledby="s4">
+      <div class="step-head">
+        <span class="step-num">4</span>
+        <div>
+          <h2 id="s4" data-i18n="step4.title">Videongiz tayyor</h2>
+          <p class="muted" data-i18n="step4.subtitle">Ko'ring, yuklab oling yoki yaxshilang</p>
+        </div>
+      </div>
+      <div id="video-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
+          <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============ HISTORY ============ -->
+  <section id="view-history" class="view" hidden>
+    <h2 data-i18n="history.title">Mening videolarim</h2>
+    <p class="muted" data-i18n="history.subtitle">Barcha yaratganlaringiz, eng yangisidan boshlab</p>
+    <div id="history-list" class="results"></div>
+  </section>
+</main>
+
+<!-- Cost confirmation -->
+<div id="confirm" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title" data-i18n="confirm.title">Narxni tasdiqlang</h3>
+    <p class="confirm-amount"><span id="confirm-cost">—</span></p>
+    <p id="confirm-detail" class="muted"></p>
+    <p class="muted small" data-i18n="confirm.note">Bu haqiqiy pul sarflaydi. Faqat muvaffaqiyatli bo'lsa yechiladi.</p>
+    <div class="modal-actions">
+      <button id="confirm-cancel" class="btn ghost big" type="button" data-i18n="confirm.cancel">Bekor qilish</button>
+      <button id="confirm-ok" class="btn primary big" type="button" data-i18n="confirm.ok">Ha, boshlash</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sign in / create account -->
+<div id="auth-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <h3 id="auth-title" data-i18n="auth.title.signin">Kirish</h3>
+    <p class="muted small" data-i18n="auth.subtitle">Video yaratish uchun hisobingiz kerak.</p>
+
+    <button id="auth-google" class="btn google big" type="button" hidden>
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path fill="#4285F4" d="M19.6 10.23c0-.68-.06-1.36-.18-2H10v3.79h5.38a4.6 4.6 0 0 1-2 3.02v2.5h3.23c1.9-1.75 2.99-4.33 2.99-7.31Z"/><path fill="#34A853" d="M10 20c2.7 0 4.96-.89 6.62-2.42l-3.23-2.5c-.9.6-2.06.95-3.39.95-2.6 0-4.8-1.76-5.59-4.12H1.06v2.59A10 10 0 0 0 10 20Z"/><path fill="#FBBC05" d="M4.41 11.9a5.99 5.99 0 0 1 0-3.8V5.5H1.06a10 10 0 0 0 0 9l3.35-2.6Z"/><path fill="#EA4335" d="M10 3.98c1.47 0 2.79.5 3.83 1.5l2.87-2.87A9.96 9.96 0 0 0 10 0 10 10 0 0 0 1.06 5.5l3.35 2.6C5.2 5.75 7.4 3.98 10 3.98Z"/></svg>
+      <span data-i18n="auth.google">Google orqali kirish</span>
+    </button>
+    <div id="auth-divider" class="auth-divider" hidden><span data-i18n="auth.or">yoki</span></div>
+
+    <label class="field">
+      <span class="label" data-i18n="auth.email">Email</span>
+      <input id="auth-email" type="email" autocomplete="email" class="big-input">
+    </label>
+    <label class="field">
+      <span class="label" data-i18n="auth.password">Parol</span>
+      <input id="auth-password" type="password" autocomplete="current-password" class="big-input">
+    </label>
+    <p id="auth-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="auth-toggle" class="btn ghost" type="button" data-i18n="auth.needAccount">Hisobingiz yo'qmi? Ro'yxatdan o'ting</button>
+      <button id="auth-submit" class="btn primary big" type="button" data-i18n="auth.signin">Kirish</button>
+    </div>
+  </div>
+</div>
+
+<!-- Post-production: upscale / lip-sync / subtitles / background removal -->
+<div id="postprod-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="postprod-title">
+    <h3 id="postprod-title" data-i18n="postprod.title">Videoni yaxshilash</h3>
+    <label class="field">
+      <span class="label" data-i18n="postprod.op">Nima qilamiz?</span>
+      <select id="postprod-op" class="big-input">
+        <option value="upscale" data-i18n="postprod.op.upscale">Sifatni oshirish</option>
+        <option value="bgremove" data-i18n="postprod.op.bgremove">Fonni olib tashlash</option>
+        <option value="subtitles" data-i18n="postprod.op.subtitles">Subtitr qo'shish</option>
+        <option value="lipsync" data-i18n="postprod.op.lipsync">Ovozni og'izga moslash</option>
+      </select>
+    </label>
+    <div id="postprod-params"></div>
+    <p id="postprod-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="postprod-cancel" class="btn ghost" type="button" data-i18n="postprod.cancel">Bekor qilish</button>
+      <button id="postprod-quote" class="btn primary big" type="button" data-i18n="postprod.getprice">Narxni bilish</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
