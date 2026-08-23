@@ -59,34 +59,63 @@ no age change, no extra fingers, no warped hands, no text, no watermark
 
 ### 2.1 Rung-1 variant selection — automatic, before the user sees anything
 
-`factory.py still` now defaults to `--count 3` (not 1). This exists because
-face-identity misses are the single most common rung-1 failure this project
-has hit, and picking the best of three matches the reference far more
-reliably than judging one shot in isolation.
+`factory.py still` defaults to `--count 5` (raised from an earlier default
+of 3). Face-identity misses are the single most common rung-1 failure this
+project has hit; more samples plus a stricter judge (below) narrows that
+failure rate further than either change alone would.
 
 The selection step is **not** a separate coded face-recognition system —
-fal has no face-similarity/verification endpoint (checked; the closest
-thing is `ip-adapter-face-id`, a *generation* technique, not a comparator),
-and adding one means either breaking this project's stdlib-only design with
-a local embedding model, or onboarding a new third-party API (new account,
-new domain to allowlist). Given the user's explicit choice, the comparator
-is Claude itself:
+fal has no face-similarity/verification endpoint (checked). Two categories
+of alternative were evaluated and deliberately not adopted:
 
-1. Run `still` with the default 3 variants — `local_paths` in the result
-   lists all three.
-2. Read all three images plus `identity.canonical_face_ref` and the source
-   photos in `work/refs/face/`.
-3. Judge each variant against the reference on the things that actually
-   drift — face shape/width, nose, jaw, eyebrows, not lighting or framing.
-4. Discard any variant that's a clear miss without showing it to the user.
-   Present only the winner (or top 2 if genuinely close) for approval, not
-   all three by default — the point is to cut the user's back-and-forth,
-   not move it downstream.
+- A **local embedding model** (onnxruntime + a face-recognition net) would
+  break this project's stdlib-only design.
+- **Identity-preserving generation techniques** on fal — `ip-adapter-face-id`,
+  `pulid`, `instant-id` — were checked directly (real, callable schemas, not
+  guessed). They aren't comparators, they're a *different way to generate*
+  the still, and were set aside for now: all three are older, SD1.5/SDXL-era
+  techniques, not the same generation family as the current still model
+  (`nano-banana-pro`, a modern instruction-following multimodal model), and
+  their own documented trade-off is real — InstantID in particular locks
+  pose/expression along with identity, which fights this project's
+  "medium close-up, frontal, safe FRAMING/ANGLE only" discipline (section 2,
+  slot vocabulary) rather than helping it. None of the three has been
+  rung-1 A/B tested against nano-banana-pro's actual output on this
+  project's actual protagonist. Don't switch the default still model on an
+  unverified face-similarity claim when the current one has a real,
+  if imperfect, production track record (13+ shots). If nano-banana-pro's
+  best-of-5 keeps hard-failing on a specific difficult character (see the
+  checklist below), that's the trigger to spend a small rung-1 budget
+  actually testing one of these three side by side — not before.
 
-If this project later needs comparison speed/scale beyond what an LLM call
-per batch gives, revisit the onnxruntime-local or third-party-API options
-noted above — that trade-off should be made deliberately, not defaulted
-into.
+Given all that, the comparator stays Claude itself, run through an explicit
+checklist rather than one holistic impression — a structured pass catches
+drift that a "looks about right" judgment call misses:
+
+1. Run `still` with the default 5 variants — `local_paths` in the result
+   lists all five.
+2. Read all five images plus `identity.canonical_face_ref` and the source
+   photos in `work/refs/face/` (or the named character's `source_sheet`).
+3. For each variant, check each of these against the reference and record
+   an explicit pass/fail — not a vibe:
+   - face shape/width and jawline
+   - nose (bridge width, length, tip shape)
+   - eyes (shape, spacing) and eyebrows (shape, thickness)
+   - mouth/lip shape
+   - hairline and hair texture/color (grey pattern, if the character has one)
+   - skin tone and any distinguishing marks (moles, scars, wrinkle pattern)
+   Ignore lighting, framing, and wardrobe — those aren't identity and
+   shouldn't cost a variant its pass.
+4. **Any single hard-fail discards the variant.** Do not average an
+   otherwise-good variant against one clear miss — a wrong nose or jaw on
+   an otherwise perfect variant is still a wrong face.
+5. Present only the winner (or top 2 if genuinely close after step 4) for
+   approval, not all five by default — the point is to cut the user's
+   back-and-forth, not move it downstream.
+
+If every variant in a batch hard-fails the same feature, that's a signal
+the prompt or reference needs to change, not that one more variant will fix
+it by luck — stop and adjust before re-running.
 
 ### 2.2 `--no-canonical` for inserts with OTHER people, not the protagonist
 

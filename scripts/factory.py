@@ -1020,8 +1020,8 @@ def main():
     p.add_argument("--ref", action="append", help="reference image URL or local path (repeatable)")
     p.add_argument("--no-canonical", action="store_true",
                     help="don't auto-prepend identity.canonical_face_ref from config.json")
-    p.add_argument("--count", type=int, default=3,
-                    help="variants to generate (default 3 -- best-of-3 for identity match, see fal-master-prompt.md 2.1)")
+    p.add_argument("--count", type=int, default=5,
+                    help="variants to generate (default 5 -- best-of-5 for identity match, see fal-master-prompt.md 2.1)")
     p.add_argument("--aspect")
     p.add_argument("--model")
     p.add_argument("--out", default=str(WORK / "stills"))
@@ -1041,7 +1041,7 @@ def main():
     p = sub.add_parser("cost", help="state a cost without spending anything")
     p.add_argument("--rung", type=int, required=True, choices=[1, 2, 3])
     p.add_argument("--seconds", type=int, default=5)
-    p.add_argument("--count", type=int, default=1)
+    p.add_argument("--count", type=int, default=5, help="rung 1 only: variants, matches `still`'s own default")
     p.add_argument("--model", help="rung 3 only: which final-take model, to price it correctly")
     p.set_defaults(func=cmd_cost)
 

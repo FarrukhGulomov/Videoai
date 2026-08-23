@@ -38,7 +38,8 @@ exactly as it did before this existed — no login, one shared workspace.
 The main flow is four steps on one page:
 
 1. **Describe the shot** — pick a preset, edit the text, choose aspect ratio
-   and how many variants. Images are cheap, so the default is 3.
+   and how many variants. Images are cheap, so the default is 5 (best-of-5,
+   see `fal-master-prompt.md` 2.1).
 2. **Pick the starting frame** — video is always animated from a chosen
    image, never invented from text.
 3. **Describe the motion** — choose model and duration, see the price, and

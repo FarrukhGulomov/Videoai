@@ -749,9 +749,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Describe the shot before generating.")
         if len(prompt) > 5000:
             raise ValueError("That prompt is too long. Keep it under 5000 characters.")
-        count = int(body.get("count") or 3)
-        if not 1 <= count <= 4:
-            raise ValueError("Variant count must be between 1 and 4.")
+        count = int(body.get("count") or 5)
+        if not 1 <= count <= 6:
+            raise ValueError("Variant count must be between 1 and 6.")
         aspect = body.get("aspect") or CONFIG["defaults"]["aspect_ratio"]
         if aspect not in ASPECT_RATIOS:
             raise ValueError("Unsupported aspect ratio.")
