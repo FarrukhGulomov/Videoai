@@ -13,7 +13,8 @@
     "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video",
     "upscale":    "fal-ai/topaz/upscale/video",
     "lipsync":    "fal-ai/sync-lipsync/v3",
-    "transcribe": "fal-ai/wizper"
+    "transcribe": "fal-ai/wizper",
+    "bg_remove":  "bria/video/background-removal/v3"
   },
 
   "rates": {
@@ -34,7 +35,8 @@
     },
     "lipsync_per_second_usd": 0.1333,
     "transcription_per_second_usd": 0.0008,
-    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) is confirmed from fal-ai/sync-lipsync/v3's own pricing panel. transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
+    "bg_remove_per_second_usd": 0.0042,
+    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
   },
 
   "defaults": {

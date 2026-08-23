@@ -25,6 +25,9 @@ Usage:
   factory.py upscale --file work/final.mp4 --tier upto1080p --i-approve-cost 1.20
   factory.py lipsync --file work/clips/03.mp4 --audio work/voice/03.wav --i-approve-cost 1.07
   factory.py subtitles --file work/final.mp4 --lang ru --i-approve-cost 0.02
+  factory.py bgremove --file work/clips/03.mp4 --i-approve-cost 0.03
+  factory.py final --scene-id S --start-frame URL --shots-json '[{"prompt":"...","duration":5},
+                     {"prompt":"...","duration":4}]' --i-approve-cost 1.13   # Kling v3 only
   factory.py assemble --clips work/clips --out work/final.mp4 [--voice work/voice.mp3]
   factory.py ledger  [--scene-id S]
 
@@ -242,20 +245,28 @@ def write_srt(chunks, path):
     pathlib.Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
-def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None):
+def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None, shots=None):
     """Veo, Kling, Seedance, and LTX each take a differently-shaped payload. Branch on model family."""
     if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx")):
         die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance/LTX")
+    if shots and "kling" not in model:
+        die(f"model '{model}' has no documented multi-shot support on fal -- multi_prompt is Kling-v3-only, drop --shots-json or switch to Kling")
 
     image_url = resolve_image(start_frame)
     end_url = resolve_image(end_frame) if end_frame else None
     if "kling" in model:
         payload = {
-            "prompt": prompt,
             "start_image_url": image_url,
-            "duration": seconds,
             "generate_audio": audio,
         }
+        # multi_prompt replaces prompt+duration entirely for a multi-shot
+        # continuous take (confirmed on Kling v3's own /api docs -- each
+        # element is {"prompt": ..., "duration": ...}, one per shot).
+        if shots:
+            payload["multi_prompt"] = shots
+        else:
+            payload["prompt"] = prompt
+            payload["duration"] = seconds
         if end_url:
             payload["end_image_url"] = end_url
         if cfg["defaults"].get("kling_cfg_scale") is not None:
@@ -477,14 +488,50 @@ def cmd_cost(args, cfg):
     })
 
 
+def parse_shots(raw):
+    """--shots-json: a JSON string or @path/to/file.json, matching Kling
+    v3's own multi_prompt shape: [{"prompt": "...", "duration": 5}, ...].
+    Reusing fal's own schema directly instead of inventing a CLI mini-syntax
+    for it."""
+    text = pathlib.Path(raw[1:]).read_text() if raw.startswith("@") else raw
+    try:
+        shots = json.loads(text)
+    except json.JSONDecodeError as exc:
+        die(f"--shots-json is not valid JSON: {exc}")
+    if not isinstance(shots, list) or not shots:
+        die('--shots-json must be a non-empty JSON list of {"prompt": ..., "duration": ...}')
+    for i, s in enumerate(shots):
+        if not isinstance(s, dict) or "prompt" not in s or "duration" not in s:
+            die(f"shot #{i + 1} in --shots-json is missing 'prompt' or 'duration'")
+    return shots
+
+
 def cmd_final(args, cfg):
     """Rung 3 — real money. Refuses to run unless the stated cost was approved."""
     model, rate = final_take_rate(args, cfg)
-    cost = round(rate * args.seconds, 4)
+
+    shots = parse_shots(args.shots_json) if args.shots_json else None
+    if shots:
+        if args.motion or args.seconds:
+            die("--shots-json replaces --motion/--seconds for a multi-shot take -- pass one or the other, not both")
+        seconds = sum(s["duration"] for s in shots)
+        motion_desc = " | ".join(s["prompt"] for s in shots)
+    else:
+        if not args.motion or not args.seconds:
+            die("either both --motion and --seconds, or --shots-json, is required")
+        seconds = args.seconds
+        motion_desc = args.motion
+
+    # fal bills a video call by its total output duration regardless of how
+    # many shots compose it -- this is the same per-second rate as a
+    # single-shot call of the same length, not a separate documented
+    # multi-shot price. Verify this assumption on the first real multi-shot
+    # invoice, same as any other newly wired capability.
+    cost = round(rate * seconds, 4)
 
     if args.i_approve_cost is None:
         die(
-            f"rung 3 costs ${cost} ({args.seconds}s x ${rate}/s).\n"
+            f"rung 3 costs ${cost} ({seconds}s x ${rate}/s).\n"
             f"  Nothing was spent. To proceed, re-run with:  --i-approve-cost {cost}"
         )
     if abs(args.i_approve_cost - cost) > 0.005:
@@ -496,19 +543,22 @@ def cmd_final(args, cfg):
     audio = cfg["defaults"]["final_audio"] if args.audio is None else args.audio
 
     payload = build_video_payload(
-        model, args.motion, args.start_frame, args.seconds,
+        model, motion_desc, args.start_frame, seconds,
         args.resolution or cfg["defaults"]["final_resolution"],
         args.negative if args.negative is not None else cfg["defaults"]["negative_prompt"],
         audio,
         cfg,
         end_frame=args.end_frame,
+        shots=shots,
     )
 
     record = {
         "scene_id": args.scene_id, "rung": 3, "model": model,
-        "prompt": args.motion, "start_frame_url": args.start_frame,
-        "duration_seconds": args.seconds, "cost_usd": cost,
+        "prompt": motion_desc, "start_frame_url": args.start_frame,
+        "duration_seconds": seconds, "cost_usd": cost,
     }
+    if shots:
+        record["shots"] = shots
 
     try:
         result = fal_run(model, payload, max_wait=1800)
@@ -694,6 +744,50 @@ def cmd_subtitles(args, cfg):
     record.update(status="success", request_id=result.get("_request_id"),
                   local_path=str(out), srt_path=str(srt_path))
     log_generation(record)
+    emit(record)
+
+
+def cmd_bgremove(args, cfg):
+    """Cuts the subject out of its background (Bria VRMBG 3.0 on fal) --
+    for compositing the protagonist into a different plate than what was
+    generated, or keying a shot for a VFX-style comp. Both the schema and
+    the $0.0042/s rate are confirmed directly on the model's own fal.ai
+    page, not a secondary source."""
+    model = cfg["models"]["bg_remove"]
+    rate = cfg["rates"]["bg_remove_per_second_usd"]
+    duration = probe_duration(args.file)
+    cost = round(rate * duration, 4)
+
+    if args.i_approve_cost is None:
+        die(
+            f"background removal costs ${cost} ({duration:.1f}s x ${rate}/s).\n"
+            f"  Nothing was spent. To proceed, re-run with:  --i-approve-cost {cost}"
+        )
+    if abs(args.i_approve_cost - cost) > 0.005:
+        die(f"approved ${args.i_approve_cost} but this call costs ${cost}. Nothing was spent.")
+
+    video_url = resolve_image(args.file)
+    payload = {
+        "video_url": video_url,
+        "background_color": args.background_color,
+        "preserve_audio": not args.no_audio,
+    }
+
+    record = {"scene_id": args.scene_id, "op": "bg_remove", "model": model,
+              "duration_seconds": round(duration, 2), "cost_usd": cost}
+    try:
+        result = fal_run(model, payload, max_wait=900)
+    except Exception as exc:  # noqa: BLE001
+        record.update(status="failed", error=str(exc)[:1500])
+        log_generation(record)
+        emit(record)
+        die(f"background removal failed: {exc}")
+
+    url = first_url(result, "video", "videos")
+    record.update(status="success", output_url=url, request_id=result.get("_request_id"))
+    log_generation(record)
+    if url and args.out:
+        record["local_path"] = str(download(url, args.out))
     emit(record)
 
 
@@ -955,8 +1049,12 @@ def main():
     p.add_argument("--scene-id", required=True)
     p.add_argument("--start-frame", required=True)
     p.add_argument("--end-frame", help="optional end-frame URL or path (Kling/Seedance only)")
-    p.add_argument("--motion", required=True)
-    p.add_argument("--seconds", type=int, required=True)
+    p.add_argument("--motion", help="single-shot motion description (omit if using --shots-json)")
+    p.add_argument("--seconds", type=int, help="single-shot duration (omit if using --shots-json)")
+    p.add_argument("--shots-json",
+                    help='Kling-v3-only, replaces --motion/--seconds: a JSON list (or @file.json) '
+                         'of {"prompt": ..., "duration": ...} shots for multi-shot continuity in '
+                         'one call, e.g. \'[{"prompt":"...","duration":5},{"prompt":"...","duration":4}]\'')
     p.add_argument("--resolution")
     p.add_argument("--audio", action=argparse.BooleanOptionalAction, default=None,
                     help="generate synced audio (default: on, from config defaults.final_audio)")
@@ -1025,6 +1123,17 @@ def main():
     p.add_argument("--i-approve-cost", type=float, default=None)
     p.add_argument("--out", default=str(WORK / "subtitled.mp4"))
     p.set_defaults(func=cmd_subtitles)
+
+    p = sub.add_parser("bgremove", help="cut the subject out of its background -- paid, needs --i-approve-cost")
+    p.add_argument("--scene-id")
+    p.add_argument("--file", required=True)
+    p.add_argument("--background-color", default="Black",
+                    help="fal default is 'Black' -- check the live playground for other valid "
+                         "enum values before relying on one that isn't confirmed here")
+    p.add_argument("--no-audio", action="store_true", help="drop the audio track instead of preserving it")
+    p.add_argument("--i-approve-cost", type=float, default=None)
+    p.add_argument("--out", default=str(WORK / "bgremoved"))
+    p.set_defaults(func=cmd_bgremove)
 
     p = sub.add_parser("assemble", help="stitch clips + voiceover with ffmpeg")
     p.add_argument("--clips", default=str(WORK / "clips"))

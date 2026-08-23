@@ -312,10 +312,11 @@ scene will not fall.
 
 ## 7. Post-production toolkit — beyond the video rungs
 
-Four commands exist for polish that no video-generation call can give you,
-each verified against fal's own `/api` docs before wiring in (same rule as
-section 5). Three are paid and follow rung 3's exact discipline: state the
-cost, approve the exact number, nothing runs otherwise. One is free.
+Five commands exist for polish and compositing that no video-generation call
+can give you, each verified against fal's own `/api` docs before wiring in
+(same rule as section 5). Four are paid and follow rung 3's exact
+discipline: state the cost, approve the exact number, nothing runs
+otherwise. One is free.
 
 | Command | Cost | What it's for | Use when |
 |---|---|---|---|
@@ -323,8 +324,28 @@ cost, approve the exact number, nothing runs otherwise. One is free.
 | `upscale` | $0.01–0.08/s by output tier (`fal-ai/topaz/upscale/video`) | Real detail-adding upscale — distinct from `polish --upscale`'s free scale+sharpen, which adds no new information. | The final assembled cut only, once, not every rung-2/3 test — this is expensive enough that upscaling a take you might discard is wasted money. `--tier` must match the real output resolution or the approved cost won't match what fal bills. |
 | `lipsync` | ~$0.1333/s (`fal-ai/sync-lipsync/v3`, $8/min) | Syncs a separately-recorded or cloned voice onto an existing clip's mouth movement — ADR-style fixes, or swapping in a cleaner voice take after the fact. | Only when the video's own built-in audio (Kling/Veo's `generate_audio`) isn't good enough and a real voice performance needs to be dropped in instead. Not a default step. |
 | `subtitles` | ~$0.0008/s, **rate unconfirmed** — see `config.json`'s `_post_production_note` (`fal-ai/wizper`) | Transcribes dialogue and burns real per-line-timed captions in via ffmpeg/libass, using `DejaVu Sans` (confirmed to render Cyrillic correctly). | Any film with dialogue in a script that needs on-screen text — replaces hand-timing a drawtext burn-in the way this project did once for "25 yil." |
+| `bgremove` | $0.0042/s (`bria/video/background-removal/v3`) | Cuts the subject out of its background. | Compositing the protagonist into a different plate than what was generated, or keying a shot for a VFX-style comp. Not a default step. |
 
-`upscale`/`lipsync` accept local files directly — `resolve_image()` uploads
-any file type despite its name, video and audio included. `subtitles` feeds
-the whole video file straight to Wizper (it accepts mp4 natively), no local
-audio-extraction step needed.
+`upscale`/`lipsync`/`bgremove` accept local files directly — `resolve_image()`
+uploads any file type despite its name, video and audio included.
+`subtitles` feeds the whole video file straight to Wizper (it accepts mp4
+natively), no local audio-extraction step needed.
+
+### 7.1 Multi-shot continuity — `final --shots-json` (Kling v3 only)
+
+Kling v3's own `/api` docs confirm a real `multi_prompt` parameter — a list
+of `{"prompt": ..., "duration": ...}` elements — that renders several shots
+as one continuous take in a single call, instead of several separate
+`final` calls stitched afterward in `assemble`. `factory.py final` exposes
+this as `--shots-json`, taking either an inline JSON list or `@file.json` in
+that exact shape, replacing `--motion`/`--seconds` entirely for that call.
+
+This is Kling-v3-only (`build_video_payload` refuses any other model with a
+clear error) and rung-3-only — there's no reason to burn a rung-2 Lite test
+on stitching shots together; test each shot's own motion individually the
+normal way first, then reach for `--shots-json` only once you're combining
+already-proven shots into one take. Cost is billed at the same per-second
+rate as any other Kling call, summed across the shots' durations — that's
+an assumption from fal billing every video call by total output duration,
+not a separately documented multi-shot price, so verify it on the first
+real invoice.
