@@ -465,9 +465,15 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
             url = factory.first_url(result, "video", "videos")
             if not url:
                 raise RuntimeError("no output returned")
-            out_dir.mkdir(parents=True, exist_ok=True)
-            factory.download(url, out_dir / f"{job_id}.mp4")
-            outputs = [f"/media/postprod/{job_id}.mp4"]
+            # Own subdirectory per job: factory.download() names the file
+            # from the URL's own basename (needed since bgremove/Bria
+            # defaults to webm, not mp4 -- a webm served as "video/mp4"
+            # fails to play), and a shared directory would risk one job's
+            # file silently overwriting another's if fal ever reused a name.
+            job_dir = out_dir / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            local_path = factory.download(url, job_dir)
+            outputs = [f"/media/postprod/{job_id}/{local_path.name}"]
             request_id = result.get("_request_id")
 
         factory.log_generation({

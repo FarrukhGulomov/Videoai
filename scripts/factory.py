@@ -229,13 +229,18 @@ def _srt_timestamp(seconds):
 
 
 def write_srt(chunks, path):
-    """chunks: fal Wizper's [{"timestamp": [start, end], "text": ...}, ...]."""
+    """chunks: fal Wizper's [{"timestamp": [start, end], "text": ...}, ...].
+    Malformed individual segments (a boundary we don't control -- this is
+    external API data) are skipped rather than crashing the whole burn-in
+    over one bad line."""
     lines = []
     n = 0
     for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
         text = (chunk.get("text") or "").strip()
         ts = chunk.get("timestamp") or [0, 0]
-        if not text:
+        if not text or not isinstance(ts, (list, tuple)) or len(ts) < 2:
             continue
         n += 1
         lines.append(str(n))
@@ -721,6 +726,14 @@ def cmd_subtitles(args, cfg):
         log_generation(record)
         die("transcription returned no timed segments -- nothing to burn in")
 
+    # Log the successful paid call now, before the free local steps below --
+    # same ordering as every other rung/op in this file (log right after the
+    # fal call succeeds, treat local post-processing as best-effort on top).
+    # A crash in write_srt/ffmpeg must not make a real, already-charged
+    # transcription vanish from the ledger.
+    record.update(status="success", request_id=result.get("_request_id"))
+    log_generation(record)
+
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     srt_path = out.with_suffix(".srt")
@@ -739,12 +752,13 @@ def cmd_subtitles(args, cfg):
         capture_output=True, text=True, check=False,
     )
     if res.returncode != 0:
-        die(f"ffmpeg subtitle burn-in failed:\n{res.stderr[-1500:]}")
+        die(
+            f"transcription succeeded and was logged (${cost}) -- the .srt is saved at "
+            f"{srt_path} -- but the local ffmpeg burn-in failed. Fix the issue and burn it "
+            f"in by hand, or retry:\n{res.stderr[-1500:]}"
+        )
 
-    record.update(status="success", request_id=result.get("_request_id"),
-                  local_path=str(out), srt_path=str(srt_path))
-    log_generation(record)
-    emit(record)
+    emit({**record, "local_path": str(out), "srt_path": str(srt_path)})
 
 
 def cmd_bgremove(args, cfg):
