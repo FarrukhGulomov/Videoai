@@ -29,6 +29,9 @@ Usage:
   factory.py final --scene-id S --start-frame URL --shots-json '[{"prompt":"...","duration":5},
                      {"prompt":"...","duration":4}]' --i-approve-cost 1.13   # Kling v3 only
   factory.py assemble --clips work/clips --out work/final.mp4 [--voice work/voice.mp3]
+  factory.py template list [--search office]
+  factory.py template harvest --name office-wide --scene-id S --skeleton '{{CHARACTER_LOCK}} ...'
+  factory.py template use --name office-wide --set CHARACTER_LOCK="..." --set LIGHT="..."
   factory.py ledger  [--scene-id S]
 
 Post-production (upscale/lipsync/subtitles) are real fal.ai calls, priced
@@ -42,6 +45,7 @@ import json
 import mimetypes
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -51,6 +55,11 @@ import urllib.request
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
 LEDGER = WORK / "generations.jsonl"
+# Deliberately NOT under work/: that directory is gitignored as generated
+# media, and a template library that disappears with the container is
+# worthless -- the entire point is that it accumulates across projects.
+# This is curated knowledge, versioned like config.json and the prompt docs.
+TEMPLATES = ROOT / "templates.json"
 CONFIG_PATH = pathlib.Path(__file__).resolve().parent / "config.json"
 
 FAL_QUEUE = "https://queue.fal.run"
@@ -1004,6 +1013,246 @@ def cmd_assemble(args, cfg):
     })
 
 
+# ---------------------------------------------------------------- templates
+#
+# The mechanism that makes the SECOND video cheaper than the first: a shot
+# type that landed cleanly gets stored with its variable parts replaced by
+# {{SLOTS}}, so the next project starts from a known-good prompt instead of
+# paying to rediscover it.
+#
+# 01-schema.sql has had a `templates` table since day one and 02-runbook.md
+# calls harvesting non-optional -- but it was a manual SQL step nobody ever
+# ran, so the table stayed empty and every video kept costing full price.
+# Storage is a local JSON file, not Supabase: factory.py is deliberately
+# stdlib-only and works with no database at all, and a harvest step that
+# depends on a network round trip is exactly the kind that gets skipped.
+
+SLOT_RE = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
+
+
+def load_templates():
+    if not TEMPLATES.exists():
+        return {"templates": []}
+    try:
+        with open(TEMPLATES) as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as exc:
+        die(f"{TEMPLATES} is not valid JSON ({exc}) -- fix or delete it before harvesting.")
+    data.setdefault("templates", [])
+    return data
+
+
+def save_templates(data):
+    WORK.mkdir(parents=True, exist_ok=True)
+    with open(TEMPLATES, "w") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+
+
+def find_template(data, name):
+    for t in data["templates"]:
+        if t["name"] == name:
+            return t
+    return None
+
+
+def template_slots(t):
+    """Every slot the template needs, across BOTH the still skeleton and the
+    motion text. Checking only the skeleton lets a motion-only slot (a
+    pronoun, the identity lock) slip through unfilled -- which produces a
+    motion prompt that silently contradicts the character just filled in."""
+    text = (t.get("prompt_skeleton") or "") + "\n" + (t.get("motion") or "")
+    return sorted(set(SLOT_RE.findall(text)))
+
+
+def ledger_rows():
+    if not LEDGER.exists():
+        return []
+    return [json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()]
+
+
+def scene_stats(scene_id):
+    """What the ledger already knows about one scene: how many attempts each
+    rung took, what it cost, and the last prompt that actually succeeded.
+    This is what makes harvesting automatic instead of a memory exercise."""
+    rows = [r for r in ledger_rows() if r.get("scene_id") == scene_id]
+    if not rows:
+        return None
+    stats = {
+        "scene_id": scene_id,
+        "total_attempts": len(rows),
+        "total_cost_usd": round(sum(float(r.get("cost_usd", 0) or 0) for r in rows), 4),
+        "rung_attempts": {},
+        "still_prompt": None,
+        "motion_prompt": None,
+        "model": None,
+    }
+    for rung in (1, 2, 3):
+        at_rung = [r for r in rows if r.get("rung") == rung]
+        if at_rung:
+            stats["rung_attempts"][rung] = len(at_rung)
+        ok = [r for r in at_rung if r.get("status") == "success"]
+        if ok:
+            if rung == 1:
+                stats["still_prompt"] = ok[-1].get("prompt")
+            elif rung == 3:
+                stats["motion_prompt"] = ok[-1].get("prompt")
+                stats["model"] = ok[-1].get("model")
+    return stats
+
+
+def cmd_template(args, cfg):
+    data = load_templates()
+
+    # ---- list ----
+    if args.action == "list":
+        items = data["templates"]
+        if args.category:
+            items = [t for t in items if t.get("category") == args.category]
+        if args.search:
+            needle = args.search.lower()
+            items = [t for t in items
+                     if needle in t["name"].lower()
+                     or needle in (t.get("prompt_skeleton") or "").lower()
+                     or needle in (t.get("category") or "").lower()]
+        emit({
+            "count": len(items),
+            "total_reuses": sum(t.get("times_used", 0) for t in items),
+            "estimated_saved_usd": round(sum(t.get("saves_per_reuse_usd", 0) * t.get("times_used", 0)
+                                             for t in items), 4),
+            "templates": [{
+                "name": t["name"],
+                "category": t.get("category"),
+                "times_used": t.get("times_used", 0),
+                "slots": template_slots(t),
+                "saves_per_reuse_usd": t.get("saves_per_reuse_usd", 0),
+            } for t in items],
+        })
+        return
+
+    # ---- show ----
+    if args.action == "show":
+        if not args.name:
+            die("`template show` needs --name")
+        t = find_template(data, args.name)
+        if not t:
+            die(f"no template named '{args.name}' -- run `template list` to see what exists")
+        emit(t)
+        return
+
+    # ---- harvest ----
+    if args.action == "harvest":
+        if not args.name or not args.scene_id:
+            die("`template harvest` needs --name and --scene-id")
+        if find_template(data, args.name) and not args.force:
+            die(f"template '{args.name}' already exists -- pick another name or pass --force to overwrite")
+
+        stats = scene_stats(args.scene_id)
+        if not stats:
+            die(f"no ledger entries for scene '{args.scene_id}' -- nothing to harvest from")
+
+        still_attempts = stats["rung_attempts"].get(1, 0)
+        # 02-runbook.md §6: only a shot that landed in <=3 iterations is worth
+        # keeping. A shot that needed more than that hasn't been solved -- it's
+        # been brute-forced, and storing it would teach the next project a
+        # prompt that doesn't reliably work.
+        if still_attempts > args.max_iterations and not args.force:
+            die(
+                f"scene '{args.scene_id}' took {still_attempts} rung-1 iterations "
+                f"(limit {args.max_iterations}). That shot wasn't solved, it was brute-forced --\n"
+                f"  harvesting it would teach the next project an unreliable prompt.\n"
+                f"  Fix the prompt and re-run the shot, or pass --force if you're sure."
+            )
+
+        skeleton = args.skeleton or stats["still_prompt"]
+        if not skeleton:
+            die(f"scene '{args.scene_id}' has no successful rung-1 prompt in the ledger, "
+                f"and no --skeleton was given")
+
+        # Reusing a template skips the failed attempts the original needed.
+        saves = round(cfg["rates"]["still_per_image_usd"] * max(0, still_attempts - 1), 4)
+
+        template = {
+            "name": args.name,
+            "category": args.category,
+            "prompt_skeleton": skeleton,
+            "motion": args.motion or stats["motion_prompt"],
+            "model": stats["model"],
+            "times_used": 0,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source_scene_id": args.scene_id,
+            "iterations_to_solve": still_attempts,
+            "source_cost_usd": stats["total_cost_usd"],
+            "saves_per_reuse_usd": saves,
+        }
+        data["templates"] = [t for t in data["templates"] if t["name"] != args.name]
+        data["templates"].append(template)
+        save_templates(data)
+
+        slots = template_slots(template)
+        emit({
+            **template,
+            "slots": slots,
+            "warning": None if slots else (
+                "This skeleton has no {{SLOTS}} -- it was stored as the literal prompt from that "
+                "scene. It will reproduce that exact shot, not a reusable shot type. Re-harvest "
+                "with --skeleton and replace the variable parts (character, location, wardrobe) "
+                "with {{SLOT}} placeholders to make it actually reusable."
+            ),
+        })
+        return
+
+    # ---- use ----
+    if args.action == "use":
+        if not args.name:
+            die("`template use` needs --name")
+        t = find_template(data, args.name)
+        if not t:
+            die(f"no template named '{args.name}' -- run `template list` to see what exists")
+
+        values = {}
+        for pair in args.set or []:
+            if "=" not in pair:
+                die(f"--set expects SLOT=VALUE, got '{pair}'")
+            k, v = pair.split("=", 1)
+            values[k.strip()] = v
+
+        skeleton = t["prompt_skeleton"]
+        needed = template_slots(t)
+        missing = [s for s in needed if s not in values]
+        if missing and not args.allow_missing:
+            die(
+                f"template '{args.name}' needs these slots: {needed}\n"
+                f"  missing: {missing}\n"
+                f"  pass them as --set SLOT=\"value\" (or --allow-missing to leave them in place)"
+            )
+
+        filled = SLOT_RE.sub(lambda m: values.get(m.group(1), m.group(0)), skeleton)
+        motion = t.get("motion")
+        if motion:
+            motion = SLOT_RE.sub(lambda m: values.get(m.group(1), m.group(0)), motion)
+
+        # Only a real use bumps the counter -- that number is what tells you
+        # which shot types are actually carrying the library's weight.
+        if not args.dry_run:
+            t["times_used"] = t.get("times_used", 0) + 1
+            save_templates(data)
+
+        emit({
+            "name": t["name"],
+            "prompt": filled,
+            "motion": motion,
+            "model": t.get("model"),
+            "times_used": t["times_used"],
+            "unfilled_slots": missing,
+            "saved_usd_this_use": t.get("saves_per_reuse_usd", 0),
+            "dry_run": bool(args.dry_run),
+        })
+        return
+
+    die(f"unknown template action '{args.action}'")
+
+
 def cmd_ledger(args, cfg):
     if not LEDGER.exists():
         emit({"entries": [], "total_cost_usd": 0})
@@ -1154,6 +1403,33 @@ def main():
     p.add_argument("--voice")
     p.add_argument("--out", default=str(WORK / "final.mp4"))
     p.set_defaults(func=cmd_assemble)
+
+    p = sub.add_parser("template",
+                        help="the shot-type library that makes the NEXT video cheaper")
+    p.add_argument("action", choices=["list", "show", "harvest", "use"],
+                    help="list: browse | show: full detail | harvest: store a solved shot | use: fill and reuse one")
+    p.add_argument("--name", help="template name (required for show/harvest/use)")
+    p.add_argument("--category", help="grouping, e.g. 'office', 'insert', 'exterior'")
+    p.add_argument("--search", help="list only: filter by substring in name/category/skeleton")
+    p.add_argument("--scene-id", help="harvest only: the scene to harvest from (read out of the ledger)")
+    p.add_argument("--skeleton",
+                    help="harvest only: the prompt with variable parts replaced by {{SLOT}} "
+                         "placeholders. Omit to store the scene's literal prompt (reproduces that "
+                         "exact shot rather than a reusable shot type).")
+    p.add_argument("--motion", help="harvest only: override the motion prompt taken from the ledger")
+    p.add_argument("--max-iterations", type=int, default=3,
+                    help="harvest only: refuse to store a shot that took more rung-1 attempts than "
+                         "this (default 3, per 02-runbook.md §6 -- more than that means it was "
+                         "brute-forced, not solved)")
+    p.add_argument("--set", action="append",
+                    help="use only: fill a slot, as --set SLOT=\"value\" (repeatable)")
+    p.add_argument("--allow-missing", action="store_true",
+                    help="use only: leave unfilled slots as {{SLOT}} instead of refusing")
+    p.add_argument("--dry-run", action="store_true",
+                    help="use only: render the prompt without bumping times_used")
+    p.add_argument("--force", action="store_true",
+                    help="harvest only: overwrite an existing name, or store a shot that exceeded --max-iterations")
+    p.set_defaults(func=cmd_template)
 
     p = sub.add_parser("ledger", help="show the local generation log")
     p.add_argument("--scene-id")

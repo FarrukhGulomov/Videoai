@@ -1,0 +1,34 @@
+{
+  "_note": "Shot-type library. Harvested with `factory.py template harvest` from shots that landed in <=3 rung-1 iterations, per 02-runbook.md section 6. Versioned on purpose (not under work/, which is gitignored) -- the whole point is that it accumulates across projects and makes each next video cheaper than the last. Slots use {{UPPER_SNAKE}} and are filled with `factory.py template use --set SLOT=\"value\"`.",
+  "_slot_conventions": "Keep pronouns in a {{SUBJECT_PRONOUN}} slot rather than hardcoding 'he'/'she' -- a motion prompt with a baked-in pronoun silently contradicts the character you fill in, which was caught the first time this library was exercised.",
+  "templates": [
+    {
+      "name": "office-teaching",
+      "category": "office",
+      "prompt_skeleton": "{{CHARACTER_LOCK}}, {{WARDROBE}}, leaning over the shoulder of a seated younger colleague at a desk with two monitors showing abstract coloured charts and no readable text, the younger colleague seen mostly from behind and out of focus, vertical 9:16, medium shot from behind the younger colleague's shoulder, {{LIGHT}}, 35mm lens, {{MOOD}}, photorealistic cinematic film still, {{NEGATIVES}}",
+      "motion": "{{SUBJECT_PRONOUN}} points at the monitor and explains something, then straightens up slightly and nods once as the younger colleague understands. Small natural gestures, no exaggerated acting. Everyone in frame keeps their own small natural idle motion throughout. Camera holds, faint handheld presence. {{IDENTITY_LOCK}}",
+      "model": null,
+      "times_used": 0,
+      "created_at": "2026-08-23T06:57:22Z",
+      "source_scene_id": "film25-S02-S03-teaching",
+      "iterations_to_solve": 1,
+      "source_cost_usd": 0.45,
+      "saves_per_reuse_usd": 0.0,
+      "notes": "Landed first try. Two-person shot -- per fal-master-prompt.md 2.3 the second person is kept turned away and out of focus, which is what kept the face-drift risk down."
+    },
+    {
+      "name": "lobby-arrival",
+      "category": "exterior",
+      "prompt_skeleton": "{{CHARACTER_LOCK}}, {{WARDROBE}}, standing just outside a stainless-steel elevator in a modern corporate lobby, vertical 9:16, medium shot, frontal with a slight 10-degree off-axis turn, {{LIGHT}}, 50mm lens, shallow depth of field, {{MOOD}}, photorealistic cinematic film still, {{NEGATIVES}}",
+      "motion": null,
+      "model": null,
+      "times_used": 0,
+      "created_at": "2026-08-23T06:57:22Z",
+      "source_scene_id": "film25-S01-arrival",
+      "iterations_to_solve": 2,
+      "source_cost_usd": 1.98,
+      "saves_per_reuse_usd": 0.15,
+      "notes": "Safe FRAMING/ANGLE per fal-master-prompt.md section 2's slot vocabulary (medium shot, near-frontal) -- reliable for face-critical work."
+    }
+  ]
+}

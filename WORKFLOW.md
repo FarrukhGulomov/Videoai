@@ -123,16 +123,46 @@ Clips concatenate in filename order, so name them `01.mp4`, `02.mp4`, …
 
 ## 6. Harvest the template
 
-Any scene that landed in ≤3 iterations:
+Any scene that landed in ≤3 iterations. This is the step that makes the next
+video cheaper; skipping it means `cost_per_scene` stays flat forever.
 
-```sql
-insert into templates (name, category, prompt_skeleton, motion, times_used)
-values ('<shot type>', '<category>',
-        '{{CHARACTER_LOCK}} in {{LOCATION}}, ...', '<motion>', 1);
+```bash
+python3 scripts/factory.py template harvest \
+  --name "<shot type>" --category "<category>" \
+  --scene-id <the scene id you used during generation> \
+  --skeleton '{{CHARACTER_LOCK}}, {{WARDROBE}}, in {{LOCATION}}, ... {{NEGATIVES}}'
 ```
 
-This is the step that makes the next video cheaper. Skipping it means
-`cost_per_scene` stays flat.
+Iteration count, cost, and the successful prompts are read out of
+`work/generations.jsonl` automatically — nothing to look up by hand. The
+command **refuses** a scene that took more than `--max-iterations` (default 3)
+rung-1 attempts: a shot that needed more than that wasn't solved, it was
+brute-forced, and storing it would teach the next project an unreliable prompt.
+
+`--skeleton` is the part that needs judgment: replace the variable parts
+(character, wardrobe, location, light, mood) with `{{SLOT}}` placeholders.
+Omit it and the literal prompt is stored, which reproduces that one exact
+shot rather than a reusable shot type — the command warns when this happens.
+
+> Earlier versions of this document had a SQL `insert` here instead. Nobody
+> ever ran it, and `templates` stayed empty through two whole films — which
+> is exactly why this is now a command that reads the ledger itself rather
+> than a manual step that depends on remembering.
+
+**Before writing any new shot prompt, check the library first:**
+
+```bash
+python3 scripts/factory.py template list --search office
+python3 scripts/factory.py template use --name lobby-arrival \
+  --set CHARACTER_LOCK="..." --set WARDROBE="..." --set LIGHT="..." \
+  --set MOOD="..." --set NEGATIVES="..."
+```
+
+`use` refuses to render with an unfilled slot unless `--allow-missing` is
+passed, and bumps `times_used` so the library shows which shot types are
+actually carrying weight. Library lives in `templates.json` at the repo root —
+version-controlled on purpose, since a library that vanishes with the
+container defeats the entire point.
 
 ## 7. Close the books
 

@@ -332,18 +332,36 @@ prompts:
 
 ## 6. Template harvest
 
-A shot that landed in three iterations or fewer is written back to `templates`
-with its variable parts replaced:
+A shot that landed in three iterations or fewer is written back to the
+library with its variable parts replaced by slots:
 
+```bash
+factory.py template harvest --name office-wide --category office \
+  --scene-id <scene> \
+  --skeleton '{{CHARACTER_LOCK}} in {{LOCATION}}, medium close-up, frontal,
+               {{LIGHT}}, 85mm, {{MOOD}}, {{NEGATIVES}}'
 ```
-{{CHARACTER_LOCK}} in {{LOCATION}}, medium close-up, frontal,
-soft flat key from camera left, 85mm, calm and level,
-do not alter the face, no text, no watermark
-```
+
+Iteration count and cost come out of the ledger automatically; the command
+refuses a shot that took more than three rung-1 attempts, because that shot
+was brute-forced rather than solved and would teach the next project a
+prompt that doesn't reliably work.
+
+**Check the library before writing any new prompt** — `template list
+--search <term>`, then `template use --name <n> --set SLOT="value"`. Slots
+are validated across both the still skeleton and the motion text, so a
+motion-only slot (a pronoun, the identity lock) can't slip through
+unfilled and quietly contradict the character just filled in.
+
+Keep pronouns in a `{{SUBJECT_PRONOUN}}` slot rather than baking "he" or
+"she" into stored motion text — caught the first time this library was
+exercised, when a stored "he points at the monitor" survived into a shot
+filled with a female character.
 
 The point of the whole system is that the second video reuses the first
 video's solved shots. A template library that isn't growing means the cost per
-scene will not fall.
+scene will not fall — and for two entire films it wasn't growing at all,
+because harvesting was a manual SQL step nobody ran.
 
 ## 7. Post-production toolkit — beyond the video rungs
 
