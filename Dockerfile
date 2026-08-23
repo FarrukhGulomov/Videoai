@@ -30,4 +30,9 @@ EXPOSE 8000
 # network namespace is not the public internet. Put a reverse proxy (with
 # TLS) in front and/or set WEBAPP_BASIC_AUTH_USER/PASS before exposing the
 # host port publicly; see DEPLOY.md.
-CMD ["python3", "webapp/server.py", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --port is deliberately omitted: webapp/server.py defaults it from the
+# PORT env var (falling back to 8000 if unset), which is what lets this
+# same image work unmodified on PaaS platforms (Railway, etc.) that
+# assign a container's port at runtime.
+CMD ["python3", "webapp/server.py", "--host", "0.0.0.0"]

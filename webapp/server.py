@@ -1061,7 +1061,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description="Video Factory web app")
-    ap.add_argument("--port", type=int, default=8000)
+    # Railway (and most PaaS platforms) assign a container a port at
+    # runtime via the PORT env var and route traffic to exactly that port
+    # -- an app that ignores it and always binds 8000 is unreachable
+    # there. --port still wins if passed explicitly; PORT is just the
+    # default's source, so nothing changes for a plain local run.
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
 
