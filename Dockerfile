@@ -20,9 +20,14 @@ RUN useradd --create-home --uid 1000 videofactory \
     && chown -R videofactory:videofactory /app
 USER videofactory
 
-# work/ (generated media, job history, ledger) should be a mounted volume
-# in production so it survives a container restart/redeploy.
-VOLUME ["/app/work"]
+# work/ (generated media, job history, ledger) should survive a restart/
+# redeploy. No `VOLUME` instruction here: Docker's own VOLUME directive
+# is a plain `docker run -v` hint that plenty of platform builders don't
+# support (Railway's rejects the image outright: "docker VOLUME ... is
+# not supported, use Railway Volumes") -- the actual persistent mount is
+# always configured on the platform side (docker run -v, a Railway
+# Volume mounted at /app/work, a Kubernetes PVC, etc.), which needs no
+# corresponding line in the Dockerfile to work.
 
 EXPOSE 8000
 

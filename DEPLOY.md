@@ -69,11 +69,11 @@ to deploy this repo as-is.
    `*.up.railway.app` URL (Railway terminates TLS for you here — you do
    *not* need the Caddy/nginx step below on Railway specifically).
 4. **Settings → Volumes → New Volume**, mount path `/app/work`. Without
-   this, job history and generated media are wiped on every redeploy —
-   the Dockerfile's `VOLUME ["/app/work"]` line only documents where the
-   data lives inside the container, it does not by itself get you a
-   Railway-managed persistent volume; that's a separate step in Railway's
-   own UI.
+   this, job history and generated media are wiped on every redeploy. The
+   Dockerfile deliberately has no `VOLUME` instruction (Railway's builder
+   rejects images that declare one — "docker VOLUME ... is not
+   supported, use Railway Volumes"); the mount is entirely a platform-side
+   step, this one.
 5. Deploy. Watch the build logs for the `pip`-free build finishing (just
    `apt-get install ffmpeg`, no dependency resolution to go wrong) and
    then `Video Factory running at http://0.0.0.0:<port>` in the runtime
