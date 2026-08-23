@@ -1,8 +1,11 @@
 /* Video Factory — front end. No framework, no build step.
-   Simplified deliberately: no model/aspect/variant pickers in the main
-   flow -- the server's own defaults are used, and duration is three plain
-   words instead of a number of seconds. Anyone should be able to use this
-   without knowing what "aspect ratio" or "Kling 3.0" mean. */
+   Simplified deliberately: no aspect/variant pickers in the main flow --
+   the server's own defaults are used, and duration is three plain words
+   instead of a number of seconds. Anyone should be able to use this
+   without knowing what "aspect ratio" means. Model choice IS exposed
+   (grouped budget/standard/premium) -- a user who doesn't mind the price
+   should be able to reach the best available quality, not just the
+   cheapest one, without that choice being hidden from them. */
 
 (() => {
   "use strict";
@@ -14,6 +17,9 @@
     selectedImage: null,
     activePreset: null,
     selectedSeconds: null,
+    selectedTier: "standard",
+    selectedModel: null,
+    avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
     authMode: "login",
@@ -116,9 +122,11 @@
     }
     renderPresets();
     renderDurationChips();
+    renderTierChips();
     wireStaticControls();
     wireAuth();
     wirePostprod();
+    wireAvatar();
     checkHealth();
     await checkAuth();
     loadHistory();
@@ -131,6 +139,8 @@
       setLang(picker.value);
       renderPresets();
       renderDurationChips();
+      renderTierChips();
+      renderAvatarResChips();
       renderAuthBar();
       renderHealthBadge();
       if (state.config) updatePostprodParamsIfOpen();
@@ -315,6 +325,27 @@
     };
   }
 
+  /* Same pattern as presetLabel(): the server sends a stable id and an
+     English fallback, the client owns the actual displayed text via i18n
+     keys. Model ids are fal's own (contain slashes/dots), so map them to
+     short slugs for the key names rather than translating the raw id. */
+  const MODEL_SLUGS = {
+    "fal-ai/ltx-2.3/image-to-video": "ltx23",
+    "fal-ai/kling-video/v3/standard/image-to-video": "kling3",
+    "fal-ai/veo3.1/image-to-video": "veo31",
+    "bytedance/seedance-2.0/image-to-video": "seedance20",
+    "blackforestlabs/flux-3/image-to-video": "flux3",
+    "bytedance/seedance-2.5/image-to-video": "seedance25",
+  };
+
+  function modelLabel(model) {
+    const slug = MODEL_SLUGS[model.id];
+    return {
+      name: slug ? t(`model.${slug}.name`) : model.name,
+      note: slug ? t(`model.${slug}.note`) : model.note,
+    };
+  }
+
   function renderPresets() {
     if (!state.config) return;
     const wrap = $("presets");
@@ -334,7 +365,7 @@
     state.activePreset = preset.id;
     $("video-prompt").value = preset.motion;
     if (preset.seconds) selectDuration(preset.seconds);
-    for (const btn of document.querySelectorAll(".preset")) {
+    for (const btn of document.querySelectorAll("#presets .preset")) {
       btn.classList.toggle("is-active", btn.dataset.id === preset.id);
     }
     toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
@@ -367,20 +398,82 @@
     }
   }
 
+  // ----------------------------------------------------- model quality tier
+
+  const TIERS_ORDER = ["budget", "standard", "premium"];
+  const TIER_LABEL_KEYS = { budget: "tier.budget", standard: "tier.standard", premium: "tier.premium" };
+
+  function renderTierChips() {
+    if (!state.config) return;
+    const present = TIERS_ORDER.filter((tier) => state.config.models.some((m) => (m.tier || "standard") === tier));
+    const wrap = $("tier-chips");
+    wrap.replaceChildren(...present.map((tier) =>
+      el("button", {
+        class: "chip" + (tier === state.selectedTier ? " is-active" : ""),
+        type: "button", "data-tier": tier,
+        onclick: () => selectTier(tier),
+        text: t(TIER_LABEL_KEYS[tier]),
+      })));
+    renderModelGrid();
+  }
+
+  function selectTier(tier) {
+    state.selectedTier = tier;
+    for (const chip of document.querySelectorAll("#tier-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.tier === tier);
+    }
+    renderModelGrid();
+  }
+
+  function renderModelGrid() {
+    if (!state.config) return;
+    const models = state.config.models.filter((m) => (m.tier || "standard") === state.selectedTier);
+    // Keep the selection valid: if nothing's picked yet, or the current pick
+    // isn't in the now-visible tier, fall back to this tier's own default
+    // (or its first model).
+    if (!state.selectedModel || !models.some((m) => m.id === state.selectedModel)) {
+      const fallback = models.find((m) => m.default) || models[0];
+      state.selectedModel = fallback ? fallback.id : null;
+    }
+    $("model-grid").replaceChildren(...models.map((m) => {
+      const label = modelLabel(m);
+      return el("button", {
+        class: "preset" + (m.id === state.selectedModel ? " is-active" : ""),
+        type: "button", "data-id": m.id,
+        onclick: () => selectModel(m.id),
+      },
+        el("strong", { text: `${label.name} · $${m.rate}/s` }),
+        el("span", { text: label.note }));
+    }));
+  }
+
+  function selectModel(id) {
+    state.selectedModel = id;
+    for (const card of document.querySelectorAll("#model-grid .preset")) {
+      card.classList.toggle("is-active", card.dataset.id === id);
+    }
+  }
+
+  function selectedModelInfo() {
+    return (state.config?.models || []).find((m) => m.id === state.selectedModel) || null;
+  }
+
   function wireStaticControls() {
     $("btn-image").addEventListener("click", generateImages);
     $("btn-video").addEventListener("click", askForVideo);
     $("tab-create").addEventListener("click", () => switchView("create"));
+    $("tab-avatar").addEventListener("click", () => switchView("avatar"));
     $("tab-history").addEventListener("click", () => switchView("history"));
   }
 
   function switchView(which) {
-    const create = which === "create";
-    $("view-create").hidden = !create;
-    $("view-history").hidden = create;
-    $("tab-create").classList.toggle("is-active", create);
-    $("tab-history").classList.toggle("is-active", !create);
-    if (!create) loadHistory();
+    $("view-create").hidden = which !== "create";
+    $("view-avatar").hidden = which !== "avatar";
+    $("view-history").hidden = which !== "history";
+    $("tab-create").classList.toggle("is-active", which === "create");
+    $("tab-avatar").classList.toggle("is-active", which === "avatar");
+    $("tab-history").classList.toggle("is-active", which === "history");
+    if (which === "history") loadHistory();
   }
 
   // ------------------------------------------------------------- polling
@@ -503,7 +596,7 @@
     try {
       quote = await api("/api/quote", {
         method: "POST",
-        body: JSON.stringify({ seconds: state.selectedSeconds }),
+        body: JSON.stringify({ seconds: state.selectedSeconds, model: state.selectedModel }),
       });
     } catch (err) {
       toast(err.message, true);
@@ -511,7 +604,8 @@
     }
 
     $("confirm-cost").textContent = money(quote.cost_usd);
-    $("confirm-detail").textContent = "";
+    const info = selectedModelInfo();
+    $("confirm-detail").textContent = info ? modelLabel(info).name : "";
     openConfirm(() => startVideo(prompt, quote));
   }
 
@@ -615,7 +709,7 @@
 
     list.replaceChildren(...done.slice(0, 40).map((job) => {
       const url = (job.outputs || [])[0];
-      const isVideo = job.kind === "video" || job.kind === "postprod";
+      const isVideo = job.kind === "video" || job.kind === "postprod" || job.kind === "avatar";
       const media = job.status === "error"
         ? el("div", { class: "card-body" },
             el("span", { class: "badge err", text: t("history.failed") }))
@@ -623,6 +717,7 @@
           ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
           : el("img", { src: url, alt: "", loading: "lazy" });
       const label = job.kind === "postprod" ? t("step4.enhance")
+        : job.kind === "avatar" ? t("nav.avatar")
         : job.kind === "video" ? t("history.badge.video") : t("history.badge.image");
 
       return el("div", { class: "card" },
@@ -768,6 +863,112 @@
     } catch (err) {
       toast(err.message, true);
     }
+  }
+
+  // ------------------------------------------------- avatar (photo + voice)
+
+  const AVATAR_RES_LABEL_KEYS = { "720p": "avatar.res.720", "1080p": "avatar.res.1080" };
+
+  function renderAvatarResChips() {
+    const wrap = $("avatar-res-chips");
+    if (!wrap) return;
+    const resolutions = state.config?.avatar?.resolutions || ["720p", "1080p"];
+    if (!resolutions.includes(state.avatarResolution)) state.avatarResolution = resolutions[resolutions.length - 1];
+    wrap.replaceChildren(...resolutions.map((res) =>
+      el("button", {
+        class: "chip" + (res === state.avatarResolution ? " is-active" : ""),
+        type: "button", "data-res": res,
+        onclick: () => selectAvatarResolution(res),
+        text: t(AVATAR_RES_LABEL_KEYS[res] || res),
+      })));
+  }
+
+  function selectAvatarResolution(res) {
+    state.avatarResolution = res;
+    for (const chip of document.querySelectorAll("#avatar-res-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.res === res);
+    }
+  }
+
+  function wireAvatar() {
+    renderAvatarResChips();
+    $("btn-avatar").addEventListener("click", quoteAvatar);
+  }
+
+  async function quoteAvatar() {
+    if (!requireSignedIn()) return;
+    const errEl = $("avatar-error");
+    errEl.hidden = true;
+    const imageUrl = $("avatar-image").value.trim();
+    const audioUrl = $("avatar-audio").value.trim();
+    if (!imageUrl || !audioUrl) {
+      errEl.textContent = t("avatar.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const prompt = $("avatar-prompt").value.trim();
+    let quote;
+    try {
+      quote = await api("/api/avatar/quote", {
+        method: "POST",
+        body: JSON.stringify({ image_url: imageUrl, audio_url: audioUrl }),
+      });
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      return;
+    }
+    $("confirm-cost").textContent = money(quote.cost_usd);
+    $("confirm-detail").textContent = "";
+    openConfirm(() => runAvatar(imageUrl, audioUrl, prompt, quote));
+  }
+
+  async function runAvatar(imageUrl, audioUrl, prompt, quote) {
+    const btn = $("btn-avatar");
+    btn.disabled = true;
+    setPanel($("avatar-results"), workingPanel());
+    try {
+      const body = {
+        image_url: imageUrl, audio_url: audioUrl,
+        resolution: state.avatarResolution, approved_cost: quote.cost_usd,
+      };
+      if (prompt) body.prompt = prompt;
+      const job = await api("/api/avatar/run", { method: "POST", body: JSON.stringify(body) });
+      poll(job.id,
+        (done) => {
+          btn.disabled = false;
+          if (done.status === "error") {
+            setPanel($("avatar-results"), errorPanel(translateApiError(done.error),
+              () => runAvatar(imageUrl, audioUrl, prompt, quote)));
+            return;
+          }
+          renderAvatarResult(done);
+          loadHistory();
+          checkAuth();
+          toast(t("toast.videoReady"));
+        },
+        () => setPanel($("avatar-results"), workingPanel()));
+    } catch (err) {
+      btn.disabled = false;
+      setPanel($("avatar-results"), errorPanel(err.message, () => runAvatar(imageUrl, audioUrl, prompt, quote)));
+    }
+  }
+
+  function renderAvatarResult(job) {
+    const url = (job.outputs || [])[0];
+    if (!url) {
+      setPanel($("avatar-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noVideo") }))));
+      return;
+    }
+    setPanel($("avatar-results"),
+      el("div", { class: "card" },
+        el("video", { src: url, controls: "", playsinline: "", preload: "metadata" }),
+        el("div", { class: "card-body" },
+          el("span", { class: "badge ok", text: money(job.cost_usd || 0) }),
+          el("span", { class: "spacer" }),
+          el("a", { class: "dl", href: url, download: "", target: "_blank",
+                    rel: "noopener", text: t("step4.download") }))));
   }
 
   boot();

@@ -30,6 +30,7 @@
 
 <nav class="tabbar">
   <button id="tab-create" class="tab is-active" type="button" data-i18n="nav.create">Yaratish</button>
+  <button id="tab-avatar" class="tab" type="button" data-i18n="nav.avatar">Avatar</button>
   <button id="tab-history" class="tab" type="button" data-i18n="nav.history">Videolarim</button>
 </nav>
 
@@ -92,6 +93,12 @@
         <div id="duration-chips" class="chips"></div>
       </div>
 
+      <div class="chip-row">
+        <span class="chip-label" data-i18n="step3.quality">Sifat darajasi</span>
+        <div id="tier-chips" class="chips"></div>
+      </div>
+      <div id="model-grid" class="presets"></div>
+
       <button id="btn-video" class="btn primary big" type="button" disabled data-i18n="step3.button">Video yaratish</button>
       <p id="video-gate" class="hint" data-i18n="step3.gate">Avval 2-qadamda suratni tanlang</p>
     </section>
@@ -109,6 +116,57 @@
         <div class="empty">
           <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
           <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============ AVATAR ============ -->
+  <section id="view-avatar" class="view" hidden>
+
+    <section class="step" aria-labelledby="av1">
+      <div class="step-head">
+        <span class="step-num" data-i18n="step1.badge">1</span>
+        <div>
+          <h2 id="av1" data-i18n="avatar.title">Rasmni gapirtiring</h2>
+          <p class="muted" data-i18n="avatar.subtitle">Bitta surat va ovoz — ular gapiradigan videoga aylanadi</p>
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="label" data-i18n="avatar.photo">Rasm havolasi</span>
+        <input id="avatar-image" type="url" class="big-input" data-i18n-placeholder="avatar.photo.placeholder">
+      </label>
+      <label class="field">
+        <span class="label" data-i18n="avatar.voice">Ovoz havolasi</span>
+        <input id="avatar-audio" type="url" class="big-input" data-i18n-placeholder="avatar.voice.placeholder">
+      </label>
+      <label class="field">
+        <span class="label" data-i18n="avatar.prompt">Qo'shimcha yo'riqnoma (ixtiyoriy)</span>
+        <textarea id="avatar-prompt" rows="2" class="big-input" data-i18n-placeholder="avatar.prompt.placeholder"></textarea>
+      </label>
+
+      <div class="chip-row">
+        <span class="chip-label" data-i18n="avatar.resolution">Sifat</span>
+        <div id="avatar-res-chips" class="chips"></div>
+      </div>
+
+      <button id="btn-avatar" class="btn primary big" type="button" data-i18n="avatar.button">Narxni bilish</button>
+      <p id="avatar-error" class="muted small err" hidden></p>
+    </section>
+
+    <section class="step" aria-labelledby="av2">
+      <div class="step-head">
+        <span class="step-num">2</span>
+        <div>
+          <h2 id="av2" data-i18n="avatar.result.title">Tayyor bo'lgan avatar</h2>
+          <p class="muted" data-i18n="avatar.result.subtitle">Ko'ring va yuklab oling</p>
+        </div>
+      </div>
+      <div id="avatar-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong data-i18n="avatar.empty.title">Hali avatar yo'q</strong></p>
+          <p class="muted" data-i18n="avatar.empty.body">Rasm va ovoz havolasini kiritib boshlang</p>
         </div>
       </div>
     </section>
