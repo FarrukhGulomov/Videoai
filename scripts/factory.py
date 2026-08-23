@@ -242,6 +242,44 @@ def probe_duration(path):
     return float(probe.stdout.strip())
 
 
+def probe_image_dimensions(path):
+    """Width/height of an image via ffprobe. Exists for one reason: Seedance
+    2.5's rate in config.json is a 16:9 approximation of a real token-based
+    (width x height x duration) formula, and fal's own docs confirm cost
+    genuinely varies by aspect ratio -- this is how require_seedance25_ratio
+    below verifies the real start frame is actually 16:9 before trusting
+    that approximation for a paid call, rather than letting --i-approve-cost
+    silently diverge from what fal will actually bill."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        die(f"ffprobe failed to read image dimensions for {path}:\n{probe.stderr[:600]}")
+    w, h = probe.stdout.strip().split("x")
+    return int(w), int(h)
+
+
+def require_seedance25_ratio(model, image_url):
+    """Seedance 2.5 only: refuse to trust the flat per-second rate unless
+    the actual start frame is 16:9, since that rate is documented as a
+    16:9-only approximation of fal's real token-based pricing. A no-op for
+    every other model."""
+    if "seedance-2.5" not in model and "seedance/2.5" not in model:
+        return
+    w, h = probe_image_dimensions(image_url)
+    ratio = w / h
+    if abs(ratio - 16 / 9) > 0.03:
+        die(
+            f"Seedance 2.5's rate in config.json is a 16:9 approximation of fal's real "
+            f"token-based pricing (width x height x duration) -- fal's own docs confirm "
+            f"cost varies by aspect ratio. Your start frame is {w}x{h} ({ratio:.2f}:1), "
+            f"not 16:9, so the quoted price could be wrong. Use a 16:9 start frame, or "
+            f"pick a different model."
+        )
+
+
 def _srt_timestamp(seconds):
     ms = int(round(max(0.0, seconds) * 1000))
     h, ms = divmod(ms, 3600000)
@@ -273,7 +311,7 @@ def write_srt(chunks, path):
 
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None, shots=None):
-    """Veo, Kling, Seedance, and LTX each take a differently-shaped payload. Branch on model family."""
+    """Veo, Kling, Seedance, FLUX, and LTX each take a differently-shaped payload. Branch on model family."""
     if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx")):
         die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance/LTX")
     if shots and "kling" not in model:
@@ -326,6 +364,21 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
         if end_url:
             payload["end_image_url"] = end_url
         # LTX has no negative_prompt param either -- same fold-in as Seedance.
+        if negative_prompt:
+            payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
+    elif "flux" in model:
+        # FLUX 3 (blackforestlabs/flux-3/image-to-video): confirmed no
+        # end_image_url and no negative_prompt param on its own /api docs
+        # -- the end-frame guard above already refuses --end-frame for it
+        # (flux isn't in that allow-list), and negatives fold into the
+        # positive prompt same as Seedance/LTX.
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": seconds,
+            "resolution": resolution,
+            "generate_audio": audio,
+        }
         if negative_prompt:
             payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
     else:
@@ -543,6 +596,7 @@ def parse_shots(raw):
 def cmd_final(args, cfg):
     """Rung 3 — real money. Refuses to run unless the stated cost was approved."""
     model, rate = final_take_rate(args, cfg)
+    require_seedance25_ratio(model, args.start_frame)
 
     shots = parse_shots(args.shots_json) if args.shots_json else None
     if shots:
@@ -610,6 +664,59 @@ def cmd_final(args, cfg):
     if url and args.out:
         record["local_path"] = str(download(url, args.out))
 
+    emit(record)
+
+
+def cmd_avatar(args, cfg):
+    """Turns a still photo + a voice track into a new talking-head video
+    (Bytedance OmniHuman v1.5 on fal) -- schema and $0.16/s rate both
+    confirmed directly on the model's own fal.ai page. Distinct from
+    `lipsync`, which re-syncs the mouth of an EXISTING video onto a new
+    audio track; this generates the video itself from nothing but a photo.
+    Priced off the audio track's own length (that's what drives the output
+    duration), same probe-then-quote discipline as the post-production ops
+    below."""
+    model = cfg["models"]["avatar"]
+    rate = cfg["rates"]["avatar_per_second_usd"]
+    duration = probe_duration(args.audio)
+    cost = round(rate * duration, 4)
+
+    if args.i_approve_cost is None:
+        die(
+            f"avatar costs ${cost} ({duration:.1f}s x ${rate}/s, priced off the audio "
+            f"track's own length).\n  Nothing was spent. To proceed, re-run with:  "
+            f"--i-approve-cost {cost}"
+        )
+    if abs(args.i_approve_cost - cost) > 0.005:
+        die(f"approved ${args.i_approve_cost} but this call costs ${cost}. Nothing was spent.")
+
+    image_url = resolve_image(args.image)
+    audio_url = resolve_image(args.audio)
+    payload = {
+        "image_url": image_url,
+        "audio_url": audio_url,
+        "resolution": args.resolution,
+    }
+    if args.prompt:
+        payload["prompt"] = args.prompt
+    if args.turbo:
+        payload["turbo_mode"] = True
+
+    record = {"scene_id": args.scene_id, "op": "avatar", "model": model,
+              "duration_seconds": round(duration, 2), "cost_usd": cost}
+    try:
+        result = fal_run(model, payload, max_wait=1800)
+    except Exception as exc:  # noqa: BLE001
+        record.update(status="failed", error=str(exc)[:1500])
+        log_generation(record)
+        emit(record)
+        die(f"avatar failed: {exc}")
+
+    url = first_url(result, "video", "videos")
+    record.update(status="success", output_url=url, request_id=result.get("_request_id"))
+    log_generation(record)
+    if url and args.out:
+        record["local_path"] = str(download(url, args.out))
     emit(record)
 
 
@@ -1347,6 +1454,17 @@ def main():
     p.add_argument("--i-approve-cost", type=float, default=None)
     p.add_argument("--out", default=str(WORK / "clips"))
     p.set_defaults(func=cmd_final)
+
+    p = sub.add_parser("avatar", help="turn a photo + voice track into a talking video (OmniHuman) -- paid, needs --i-approve-cost")
+    p.add_argument("--scene-id", required=True)
+    p.add_argument("--image", required=True, help="the portrait/photo to animate")
+    p.add_argument("--audio", required=True, help="the voice track that drives the performance -- its length sets the output length and the price")
+    p.add_argument("--prompt", help="optional text guidance for expression/motion style")
+    p.add_argument("--resolution", choices=["720p", "1080p"], default="1080p")
+    p.add_argument("--turbo", action="store_true", help="faster generation, some quality trade-off")
+    p.add_argument("--i-approve-cost", type=float, default=None)
+    p.add_argument("--out", default=str(WORK / "avatar"))
+    p.set_defaults(func=cmd_avatar)
 
     p = sub.add_parser("fetch", help="download a URL")
     p.add_argument("--url", required=True)

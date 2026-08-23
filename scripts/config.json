@@ -1,16 +1,19 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
-  "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest proven option, matches this user's own Higgsfield clips, strong action/motion/lip-sync). LTX-2.3 for cost-sensitive or long single-take shots (verified cheapest at $0.06/s 1080p, up to 20s in one call, vertical-native -- untested on this project's actual likeness-holding yet, so not a blind default). Veo 3.1 for face-critical calm/dialogue close-ups. Seedance 2.0 only for a hero shot with heavy physics/particle simulation that justifies its price -- never the default.",
+  "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest proven option, matches this user's own Higgsfield clips, strong action/motion/lip-sync). LTX-2.3 for cost-sensitive or long single-take shots (verified cheapest at $0.06/s 1080p, up to 20s in one call, vertical-native -- untested on this project's actual likeness-holding yet, so not a blind default). Veo 3.1 for face-critical calm/dialogue close-ups. Seedance 2.0 for a hero shot with heavy physics/particle simulation that justifies its price. Seedance 2.5 and FLUX 3 are the two 'top quality, cost no object' options -- both meaningfully more expensive than everything else here, offered as an explicit opt-in tier for a user who has said price isn't the deciding factor, never chosen automatically. See each rate's own _note for the caveats that come with picking them.",
 
   "models": {
     "still":        "fal-ai/nano-banana-pro",
     "still_edit":   "fal-ai/nano-banana-pro/edit",
     "motion_test":  "fal-ai/veo3.1/lite/image-to-video",
     "final_take":   "fal-ai/kling-video/v3/standard/image-to-video",
-    "final_take_alt_veo":      "fal-ai/veo3.1/image-to-video",
-    "final_take_alt_seedance": "bytedance/seedance-2.0/image-to-video",
-    "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video",
+    "final_take_alt_veo":       "fal-ai/veo3.1/image-to-video",
+    "final_take_alt_seedance":  "bytedance/seedance-2.0/image-to-video",
+    "final_take_alt_seedance25": "bytedance/seedance-2.5/image-to-video",
+    "final_take_alt_flux3":     "blackforestlabs/flux-3/image-to-video",
+    "final_take_alt_ltx":       "fal-ai/ltx-2.3/image-to-video",
+    "avatar":     "fal-ai/bytedance/omnihuman/v1.5",
     "upscale":    "fal-ai/topaz/upscale/video",
     "lipsync":    "fal-ai/sync-lipsync/v3",
     "transcribe": "fal-ai/wizper",
@@ -20,12 +23,15 @@
   "rates": {
     "still_per_image_usd":       0.15,
     "motion_test_per_second_usd": 0.03,
+    "avatar_per_second_usd": 0.16,
     "final_take_per_second_usd_by_model": {
       "fal-ai/kling-video/v3/standard/image-to-video": 0.126,
       "fal-ai/veo3.1/image-to-video": 0.15,
       "bytedance/seedance-2.0/image-to-video": 0.3024,
       "fal-ai/ltx-2.3/image-to-video": 0.06,
-      "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing). LTX-2.3's 0.06 is the 1080p tier; 1440p is 0.12 and 4K is 0.24 -- add those as separate model ids (e.g. with a resolution suffix) if a shot needs them, don't silently reuse this rate at a different resolution."
+      "bytedance/seedance-2.5/image-to-video": 0.4730,
+      "blackforestlabs/flux-3/image-to-video": 0.17,
+      "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing). LTX-2.3's 0.06 is the 1080p tier; 1440p is 0.12 and 4K is 0.24 -- add those as separate model ids (e.g. with a resolution suffix) if a shot needs them, don't silently reuse this rate at a different resolution. FLUX 3's 0.17 is its 720p tier; 1080p is 0.29/s and, same as LTX, needs a separate model id if wired -- not done here since this project defaults final takes to 1080p elsewhere but FLUX 3 isn't the default for anything, so the cheaper tier is what a caller opting into it explicitly gets quoted. Seedance 2.5 is priced DIFFERENTLY from every other row here: fal bills it by a token formula (output width x height x duration x 24 / 1024, at $0.0214/1000 tokens), not a flat per-second rate, and fal's own docs confirm 'wider aspect ratios ... cost more per second, narrower ones cost less' -- 0.4730 is the confirmed approximation for standard 16:9 only. cmd_final refuses to quote/run this model unless the actual start-frame image is 16:9 (checked via ffprobe), specifically so this approximation can never silently under- or over-charge against what --i-approve-cost approved."
     },
     "upscale_per_second_usd_by_tier": {
       "le720p": 0.01,
