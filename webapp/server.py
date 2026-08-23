@@ -373,6 +373,15 @@ def friendly_error(exc):
         return "Could not reach fal.ai. Check the connection and try again."
     if "no rate on file" in text:
         return "That model has no price on file, so it was refused before spending anything."
+    if "HTTP 401" in text or "HTTP 403" in text:
+        return (
+            "The server's fal.ai API key was rejected. Nothing was charged. "
+            "Check that FAL_KEY on the server is correct and still active."
+        )
+    if "HTTP 429" in text:
+        return "fal.ai is rate-limiting this key right now. Wait a moment and try again."
+    if "HTTP 5" in text:
+        return "fal.ai is having trouble on its end right now. Nothing was charged — try again shortly."
     return f"Generation failed: {text[:300]}"
 
 

@@ -132,22 +132,31 @@
       renderPresets();
       renderDurationChips();
       renderAuthBar();
+      renderHealthBadge();
       if (state.config) updatePostprodParamsIfOpen();
     });
+  }
+
+  function renderHealthBadge() {
+    const h = state.health;
+    if (!h) return;
+    const problems = [];
+    if (!h.fal_key_configured) problems.push(t("health.falKeyMissing"));
+    if (!h.ffmpeg_available) problems.push(t("health.ffmpegMissing"));
+    const badge = $("health");
+    if (problems.length) {
+      badge.textContent = problems.join(" · ");
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
   }
 
   async function checkHealth() {
     try {
       const h = await api("/api/health");
       state.health = h;
-      const problems = [];
-      if (!h.fal_key_configured) problems.push("fal.ai key missing");
-      if (!h.ffmpeg_available) problems.push("ffmpeg missing");
-      if (problems.length) {
-        const badge = $("health");
-        badge.textContent = problems.join(" · ");
-        badge.hidden = false;
-      }
+      renderHealthBadge();
       if (h.oauth) {
         $("auth-google").hidden = false;
         $("auth-divider").hidden = false;

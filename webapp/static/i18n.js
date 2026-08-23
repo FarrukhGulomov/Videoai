@@ -96,6 +96,9 @@ const I18N = {
     "common.errorTitle": "Xatolik yuz berdi",
     "common.connectError": "Serverga ulanib bo'lmadi. U ishlab turibdimi?",
 
+    "health.falKeyMissing": "fal.ai kaliti sozlanmagan",
+    "health.ffmpegMissing": "ffmpeg topilmadi",
+
     "toast.describeFirst": "Avval nima haqida ekanini yozing",
     "toast.pickFrame": "Avval 2-qadamda suratni tanlang",
     "toast.signInFirst": "Davom etish uchun kiring",
@@ -214,6 +217,9 @@ const I18N = {
     "common.errorTitle": "Произошла ошибка",
     "common.connectError": "Не удалось подключиться к серверу. Он запущен?",
 
+    "health.falKeyMissing": "ключ fal.ai не настроен",
+    "health.ffmpegMissing": "ffmpeg не найден",
+
     "toast.describeFirst": "Сначала опишите, о чём видео",
     "toast.pickFrame": "Сначала выберите фото на шаге 2",
     "toast.signInFirst": "Войдите, чтобы продолжить",
@@ -331,6 +337,9 @@ const I18N = {
     "common.retry": "Try again",
     "common.errorTitle": "Something went wrong",
     "common.connectError": "Could not reach the server. Is it running?",
+
+    "health.falKeyMissing": "fal.ai key not configured",
+    "health.ffmpegMissing": "ffmpeg not found",
 
     "toast.describeFirst": "Describe the video first",
     "toast.pickFrame": "Pick a photo in step 2 first",
