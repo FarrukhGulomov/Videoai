@@ -21,6 +21,22 @@
 
   // ---------------------------------------------------------------- utils
 
+  /* The server's error text is always English (see webapp/server.py) -- it
+     was never worth teaching the backend three languages just for error
+     strings. A handful of the most common ones are recognized and swapped
+     for the translated version here, in the one place every error passes
+     through, rather than patched at each of the many places an error gets
+     shown. Anything not recognized is shown as-is (English) rather than
+     hidden -- a real, actionable error the user can still act on beats a
+     silently swallowed one. */
+  function translateApiError(message) {
+    if (!message) return message;
+    if (message === "Incorrect email or password.") return t("auth.wrongPassword");
+    const priceChange = message.match(/^The price changed to \$([\d.]+)/);
+    if (priceChange) return `${t("toast.priceChanged")} ($${priceChange[1]})`;
+    return message;
+  }
+
   async function api(path, options) {
     const res = await fetch(path, {
       headers: { "Content-Type": "application/json" },
@@ -30,9 +46,9 @@
     try {
       data = await res.json();
     } catch {
-      throw new Error("The server returned an unreadable response.");
+      throw new Error(t("common.connectError"));
     }
-    if (!res.ok) throw new Error(data && data.error ? data.error : "Request failed.");
+    if (!res.ok) throw new Error(translateApiError(data && data.error) || "Request failed.");
     return data;
   }
 
@@ -358,13 +374,6 @@
     if (!create) loadHistory();
   }
 
-  /* The server's own recommended model (marked default:true in /api/config) --
-     never surfaced as a choice. A grandmother doesn't need to know model
-     names exist. */
-  function defaultModel() {
-    return state.config.models.find((m) => m.default) || state.config.models[0];
-  }
-
   // ------------------------------------------------------------- polling
 
   function poll(jobId, onDone, onProgress) {
@@ -418,7 +427,7 @@
         (done) => {
           btn.disabled = false;
           if (done.status === "error") {
-            setPanel($("image-results"), errorPanel(done.error, generateImages));
+            setPanel($("image-results"), errorPanel(translateApiError(done.error), generateImages));
             return;
           }
           renderImageChoices(done.outputs || []);
@@ -478,7 +487,8 @@
       toast(t("toast.pickFrame"), true);
       return;
     }
-    const prompt = $("video-prompt").value.trim() || defaultModel().note || "Camera holds steady, natural ambient motion.";
+    const prompt = $("video-prompt").value.trim()
+      || "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion.";
 
     let quote;
     try {
@@ -536,7 +546,7 @@
         (done) => {
           btn.disabled = false;
           if (done.status === "error") {
-            setPanel($("video-results"), errorPanel(done.error,
+            setPanel($("video-results"), errorPanel(translateApiError(done.error),
               () => startVideo(prompt, quote)));
             return;
           }
@@ -618,7 +628,7 @@
                           rel: "noopener", text: t("step4.download") }) : null),
         job.status === "error"
           ? el("div", { class: "card-body" },
-              el("span", { class: "muted small", text: job.error || t("history.failed") }))
+              el("span", { class: "muted small", text: translateApiError(job.error) || t("history.failed") }))
           : null);
     }));
   }
@@ -740,7 +750,7 @@
           checkAuth();
           loadHistory();
           if (done.status === "error") {
-            toast(done.error || t("toast.enhanceFailed"), true);
+            toast(translateApiError(done.error) || t("toast.enhanceFailed"), true);
             return;
           }
           toast(t("toast.enhanceReady"));

@@ -97,7 +97,6 @@ const I18N = {
     "common.connectError": "Serverga ulanib bo'lmadi. U ishlab turibdimi?",
 
     "toast.describeFirst": "Avval nima haqida ekanini yozing",
-    "toast.motionFirst": "Harakatni yozing yoki bo'sh qoldiring",
     "toast.pickFrame": "Avval 2-qadamda suratni tanlang",
     "toast.signInFirst": "Davom etish uchun kiring",
     "toast.videoReady": "Video tayyor!",
@@ -216,7 +215,6 @@ const I18N = {
     "common.connectError": "Не удалось подключиться к серверу. Он запущен?",
 
     "toast.describeFirst": "Сначала опишите, о чём видео",
-    "toast.motionFirst": "Опишите движение или оставьте пустым",
     "toast.pickFrame": "Сначала выберите фото на шаге 2",
     "toast.signInFirst": "Войдите, чтобы продолжить",
     "toast.videoReady": "Видео готово!",
@@ -335,7 +333,6 @@ const I18N = {
     "common.connectError": "Could not reach the server. Is it running?",
 
     "toast.describeFirst": "Describe the video first",
-    "toast.motionFirst": "Describe the motion, or leave it blank",
     "toast.pickFrame": "Pick a photo in step 2 first",
     "toast.signInFirst": "Sign in to continue",
     "toast.videoReady": "Video ready!",
