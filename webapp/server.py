@@ -782,6 +782,14 @@ class Handler(BaseHTTPRequestHandler):
         return owner, owner
 
     def _generate_image(self, body):
+        """approved_cost is OPTIONAL here, unlike video/postprod: the web UI
+        shows the live price inline and treats a deliberate button click as
+        approval, no modal needed -- images are cheap enough that adding a
+        confirm dialog was a net usability loss (see webapp redesign notes).
+        A caller that DOES pass approved_cost gets the exact same hard
+        enforcement as every paid endpoint -- this is for programmatic
+        callers (the MCP server) that have no human clicking a button in
+        front of them and need the real confirmation round trip instead."""
         prompt = (body.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("Describe the shot before generating.")
@@ -795,6 +803,13 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Unsupported aspect ratio.")
 
         cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
+        approved = body.get("approved_cost")
+        if approved is not None and abs(float(approved) - cost) > 0.005:
+            raise ValueError(
+                f"The price changed to ${cost} since it was quoted. "
+                "Nothing was charged — re-confirm to continue."
+            )
+
         owner, charge_user_id = self._require_funded_user(cost)
 
         job = _new_job(

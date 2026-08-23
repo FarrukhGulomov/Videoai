@@ -1,0 +1,508 @@
+#!/usr/bin/env python3
+"""
+Video Factory MCP server — lets Claude Desktop, Claude Code, or any other
+MCP-speaking client (including MCP-capable GPT tooling) generate images and
+videos through this project's webapp API.
+
+Stdlib only, matching the rest of this project: no `mcp` pip package, the
+JSON-RPC 2.0 / stdio wire protocol is implemented directly against the
+official schema (verified against
+raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol's
+schema.json — modelcontextprotocol.io itself is blocked by this project's
+sandbox network policy, so the schema was fetched from its source repo
+instead of guessed).
+
+This talks to a RUNNING `webapp/server.py` instance over HTTP -- it does
+not call fal.ai directly. That is deliberate: every cost rule, every
+default, and the whole quote-then-approve safety gate already live in
+webapp/server.py (which itself reuses scripts/factory.py). Reimplementing
+any of that here would be a second copy of the same logic, exactly what
+this project has avoided everywhere else (the webapp reuses factory.py the
+same way).
+
+Run:
+  python3 webapp/server.py &        # the webapp must already be running
+  python3 mcp/server.py             # this process, launched by your MCP client
+
+Configure via environment:
+  VIDEO_FACTORY_URL       webapp base URL, default http://127.0.0.1:8000
+  VIDEO_FACTORY_SESSION   optional -- a vf_session cookie value, only needed
+                          if the webapp is in multi-user mode (see
+                          mcp/README.md for how to obtain one; this is a
+                          stopgap until a real API-key mode exists)
+
+See mcp/README.md for the exact Claude Desktop / Claude Code config JSON.
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+BASE_URL = os.environ.get("VIDEO_FACTORY_URL", "http://127.0.0.1:8000").rstrip("/")
+SESSION_COOKIE = os.environ.get("VIDEO_FACTORY_SESSION", "").strip()
+PROTOCOL_VERSION = "2025-06-18"
+SERVER_NAME = "video-factory"
+SERVER_VERSION = "1.0.0"
+
+
+def log(msg):
+    """Stdout is reserved exclusively for JSON-RPC messages -- the MCP stdio
+    transport requires this. Anything else on stdout corrupts the stream
+    and silently breaks the client. All logging goes to stderr."""
+    print(msg, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- webapp API
+
+def api(method, path, body=None, timeout=300):
+    url = f"{BASE_URL}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    if SESSION_COOKIE:
+        headers["Cookie"] = f"vf_session={SESSION_COOKIE}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            detail = json.loads(raw).get("error") or raw.decode()
+        except Exception:  # noqa: BLE001
+            detail = raw.decode(errors="replace")
+        raise RuntimeError(detail) from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Could not reach the Video Factory server at {BASE_URL} ({exc.reason}). "
+            f"Is `python3 webapp/server.py` running?"
+        ) from None
+
+
+def media_url(path):
+    """Postprod results come back as server-relative paths (/media/...);
+    still/video results are already absolute fal CDN URLs. Normalize both
+    to something a caller outside this process can actually open."""
+    if not path:
+        return path
+    return path if path.startswith("http") else f"{BASE_URL}{path}"
+
+
+def wait_for_job(job_id, max_wait, poll_seconds=3):
+    """Blocks until the job finishes or max_wait elapses -- mirrors
+    scripts/factory.py's own fal_run(), which blocks the CLI the same way.
+    Simpler for a calling LLM than requiring it to implement its own
+    polling loop across multiple tool calls."""
+    waited = 0
+    while waited < max_wait:
+        job = api("GET", f"/api/jobs/{job_id}")
+        if job.get("status") in ("done", "error"):
+            return job
+        time.sleep(poll_seconds)
+        waited += poll_seconds
+    return {
+        "status": "pending", "id": job_id,
+        "note": (f"Still running after {max_wait}s. Call video_factory_check_job "
+                 f"with job_id=\"{job_id}\" in a little while to get the result."),
+    }
+
+
+# -------------------------------------------------------------- tool handlers
+#
+# Every PAID tool requires an explicit approved_cost argument that must
+# exactly match a fresh quote from the matching video_factory_quote_* tool
+# -- the webapp API refuses a mismatch server-side, the same non-negotiable
+# gate the CLI (--i-approve-cost) and the browser UI both use. This is not
+# optional politeness: an LLM calling this server autonomously has no human
+# clicking a confirm button in front of it, so the tool descriptions below
+# state the requirement explicitly and the server initialize response
+# repeats it once more as a standing instruction.
+
+def h_get_info(_args):
+    cfg = api("GET", "/api/config")
+    lines = ["PRESETS (pass the id's motion style, or just describe your own idea):"]
+    for p in cfg["presets"]:
+        lines.append(f"  - {p['id']}: {p['name']} — {p['blurb']}")
+    lines.append("")
+    lines.append(f"IMAGES: ${cfg['image_cost']}/variant, 5 generated by default "
+                 f"(${round(cfg['image_cost'] * 5, 2)} total) so the best one can be picked.")
+    lines.append("")
+    lines.append("VIDEO MODELS (chosen automatically, listed here for context only):")
+    for m in cfg["models"]:
+        tag = " <- default" if m.get("default") else ""
+        lines.append(f"  - {m['name']}: ${m['rate']}/s — {m['note']}{tag}")
+    lines.append(f"Available durations (seconds): {cfg['durations']}")
+    pp = cfg.get("postprod")
+    if pp:
+        lines.append("")
+        lines.append("ENHANCEMENTS (post-production, run on an existing video):")
+        tiers = ", ".join(f"{k}=${v}/s" for k, v in pp["upscale_tiers"].items())
+        lines.append(f"  - upscale: {tiers} (real detail added, not just resizing)")
+        lines.append(f"  - bgremove: ${pp['bgremove_rate']}/s")
+        lines.append(f"  - subtitles: ${pp['subtitles_rate']}/s (transcribes + burns in captions)")
+        lines.append(f"  - lipsync: ${pp['lipsync_rate']}/s (needs a separate audio_url)")
+    return "\n".join(lines)
+
+
+def h_quote_images(args):
+    cfg = api("GET", "/api/config")
+    count = int(args.get("count") or 5)
+    if not 1 <= count <= 6:
+        raise RuntimeError("count must be between 1 and 6.")
+    cost = round(cfg["image_cost"] * count, 4)
+    return (f"{count} image variant(s) = ${cost}. Call video_factory_create_images with "
+            f"approved_cost={cost} (and the same count, if you changed it from the default) to proceed.")
+
+
+def h_create_images(args):
+    prompt = (args.get("prompt") or "").strip()
+    if not prompt:
+        raise RuntimeError("prompt is required.")
+    count = int(args.get("count") or 5)
+    approved = args.get("approved_cost")
+    if approved is None:
+        raise RuntimeError(
+            "approved_cost is required. Call video_factory_quote_images first, "
+            "show the user that price, and only then pass its exact cost_usd here."
+        )
+    job = api("POST", "/api/generate/image",
+               {"prompt": prompt, "count": count, "approved_cost": approved})
+    result = wait_for_job(job["id"], max_wait=90)
+    if result.get("status") == "error":
+        raise RuntimeError(f"Image generation failed: {result.get('error')}")
+    if result.get("status") == "pending":
+        return result["note"]
+    outputs = result.get("outputs") or []
+    if not outputs:
+        return "The model finished but returned no images."
+    lines = [f"Generated {len(outputs)} image(s) for ${result.get('cost_usd', 0)}:"]
+    lines += [f"  {i}. {url}" for i, url in enumerate(outputs, 1)]
+    lines.append("")
+    lines.append("Pick one URL and pass it as image_url to video_factory_quote_video / "
+                 "video_factory_create_video.")
+    return "\n".join(lines)
+
+
+def h_quote_video(args):
+    seconds = int(args.get("seconds") or 6)
+    quote = api("POST", "/api/quote", {"seconds": seconds})
+    return (f"{quote['shown_as']}. Call video_factory_create_video with "
+            f"approved_cost={quote['cost_usd']} and seconds={seconds} to proceed.")
+
+
+def h_create_video(args):
+    image_url = (args.get("image_url") or "").strip()
+    if not image_url:
+        raise RuntimeError(
+            "image_url is required -- generate a starting image first with "
+            "video_factory_create_images and pass one of its URLs here. Video is always "
+            "animated from a chosen image, never invented from text alone."
+        )
+    seconds = int(args.get("seconds") or 6)
+    approved = args.get("approved_cost")
+    if approved is None:
+        raise RuntimeError(
+            "approved_cost is required. Call video_factory_quote_video first, "
+            "show the user that price, and only then pass its exact cost_usd here."
+        )
+    prompt = (args.get("motion") or "").strip() or "Camera holds steady, natural ambient motion."
+    job = api("POST", "/api/generate/video", {
+        "prompt": prompt, "image_url": image_url, "seconds": seconds, "approved_cost": approved,
+    })
+    result = wait_for_job(job["id"], max_wait=300)
+    if result.get("status") == "error":
+        raise RuntimeError(f"Video generation failed: {result.get('error')}")
+    if result.get("status") == "pending":
+        return result["note"]
+    outputs = result.get("outputs") or []
+    if not outputs:
+        return "The model finished but returned no video."
+    return f"Video ready (${result.get('cost_usd', 0)}): {media_url(outputs[0])}"
+
+
+def _postprod_body(args):
+    op = args.get("operation")
+    video_url = (args.get("video_url") or "").strip()
+    if op not in ("upscale", "bgremove", "subtitles", "lipsync"):
+        raise RuntimeError("operation must be one of: upscale, bgremove, subtitles, lipsync.")
+    if not video_url:
+        raise RuntimeError("video_url is required.")
+    body = {"op": op, "file_url": video_url}
+    if args.get("quality_tier"):
+        body["tier"] = args["quality_tier"]
+    if args.get("language"):
+        body["lang"] = args["language"]
+    if args.get("audio_url"):
+        body["audio_url"] = args["audio_url"]
+    if args.get("background_color"):
+        body["background_color"] = args["background_color"]
+    if op == "lipsync" and not body.get("audio_url"):
+        raise RuntimeError("lipsync needs audio_url -- a direct link to the voice track.")
+    if op == "upscale" and not body.get("tier"):
+        body["tier"] = "upto1080p"
+    return body
+
+
+def h_quote_enhancement(args):
+    body = _postprod_body(args)
+    quote = api("POST", "/api/postprod/quote", body)
+    return (f"{quote['shown_as']} using {quote['model']}. "
+            f"Call video_factory_enhance_video with approved_cost={quote['cost_usd']} to proceed.")
+
+
+def h_enhance_video(args):
+    body = _postprod_body(args)
+    approved = args.get("approved_cost")
+    if approved is None:
+        raise RuntimeError(
+            "approved_cost is required. Call video_factory_quote_enhancement first, "
+            "show the user that price, and only then pass its exact cost_usd here."
+        )
+    body["approved_cost"] = approved
+    job = api("POST", "/api/postprod/run", body)
+    result = wait_for_job(job["id"], max_wait=300)
+    if result.get("status") == "error":
+        raise RuntimeError(f"Enhancement failed: {result.get('error')}")
+    if result.get("status") == "pending":
+        return result["note"]
+    outputs = result.get("outputs") or []
+    if not outputs:
+        return "Finished but returned no file."
+    return f"Ready (${result.get('cost_usd', 0)}): {media_url(outputs[0])}"
+
+
+def h_check_job(args):
+    job_id = (args.get("job_id") or "").strip()
+    if not job_id:
+        raise RuntimeError("job_id is required.")
+    job = api("GET", f"/api/jobs/{job_id}")
+    status = job.get("status")
+    if status == "error":
+        return f"Failed: {job.get('error')}"
+    if status != "done":
+        return f"Status: {status} — {job.get('stage', '')}"
+    outputs = [media_url(u) for u in (job.get("outputs") or [])]
+    return f"Done (${job.get('cost_usd', 0)}): " + (", ".join(outputs) if outputs else "no output")
+
+
+def h_list_my_videos(_args):
+    data = api("GET", "/api/jobs")
+    jobs = data.get("jobs") or []
+    if not jobs:
+        return "Nothing generated yet."
+    lines = []
+    for j in jobs[:20]:
+        outputs = j.get("outputs") or []
+        url = media_url(outputs[0]) if outputs else ""
+        lines.append(f"- [{j.get('kind')}] {j.get('status')} ${j.get('cost_usd', 0)} "
+                     f"id={j.get('id')} {url}".rstrip())
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------- tools
+
+TOOLS = [
+    {
+        "name": "video_factory_get_info",
+        "description": ("Read-only. Lists available style presets, current model/enhancement "
+                        "pricing, and available video durations. Call this first to know what's "
+                        "possible before generating anything."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "video_factory_quote_images",
+        "description": "Read-only, spends nothing. Prices generating starting-image variants for a video.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer", "minimum": 1, "maximum": 6,
+                           "description": "How many image variants (default 5 -- best-of-5 for identity match)."},
+            },
+        },
+    },
+    {
+        "name": "video_factory_create_images",
+        "description": ("PAID. Generates image variants from a text description -- the starting "
+                        "frame a video will later be animated from. Requires approved_cost from "
+                        "video_factory_quote_images, obtained after the user has agreed to the price."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "What the image should show, in plain English."},
+                "count": {"type": "integer", "minimum": 1, "maximum": 6, "description": "Must match the quoted count (default 5)."},
+                "approved_cost": {"type": "number", "description": "The exact cost_usd from video_factory_quote_images. Required."},
+            },
+            "required": ["prompt", "approved_cost"],
+        },
+    },
+    {
+        "name": "video_factory_quote_video",
+        "description": "Read-only, spends nothing. Prices animating a chosen image into a video of a given length.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "integer", "description": "Video length in seconds -- see video_factory_get_info for valid values (default 6)."},
+            },
+        },
+    },
+    {
+        "name": "video_factory_create_video",
+        "description": ("PAID. Animates one chosen starting image into a video. Requires "
+                        "approved_cost from video_factory_quote_video, obtained after the user "
+                        "has agreed to the price. Video is always generated from a real image "
+                        "(from video_factory_create_images), never invented from text alone."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "image_url": {"type": "string", "description": "A URL returned by video_factory_create_images -- the exact frame to animate."},
+                "motion": {"type": "string", "description": "What should move/happen, in plain English. Optional -- a calm default is used if omitted."},
+                "seconds": {"type": "integer", "description": "Must match the quoted duration (default 6)."},
+                "approved_cost": {"type": "number", "description": "The exact cost_usd from video_factory_quote_video. Required."},
+            },
+            "required": ["image_url", "approved_cost"],
+        },
+    },
+    {
+        "name": "video_factory_quote_enhancement",
+        "description": "Read-only, spends nothing. Prices upscaling, background removal, subtitles, or lip-sync on an existing video.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["upscale", "bgremove", "subtitles", "lipsync"]},
+                "video_url": {"type": "string", "description": "URL of an already-generated video (from video_factory_create_video or history)."},
+                "quality_tier": {"type": "string", "enum": ["le720p", "upto1080p", "above1080p"],
+                                  "description": "upscale only -- output resolution tier, sets the price. Defaults to upto1080p."},
+                "language": {"type": "string", "description": "subtitles only -- language code, e.g. 'ru', 'uz'. Omit to auto-detect."},
+                "audio_url": {"type": "string", "description": "lipsync only -- REQUIRED for lipsync: a direct URL to the voice track."},
+                "background_color": {"type": "string", "description": "bgremove only -- e.g. 'Black' (default), 'White'."},
+            },
+            "required": ["operation", "video_url"],
+        },
+    },
+    {
+        "name": "video_factory_enhance_video",
+        "description": ("PAID. Runs upscale/bgremove/subtitles/lipsync on an existing video. "
+                        "Requires approved_cost from video_factory_quote_enhancement, obtained "
+                        "after the user has agreed to the price."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["upscale", "bgremove", "subtitles", "lipsync"]},
+                "video_url": {"type": "string"},
+                "quality_tier": {"type": "string", "enum": ["le720p", "upto1080p", "above1080p"]},
+                "language": {"type": "string"},
+                "audio_url": {"type": "string"},
+                "background_color": {"type": "string"},
+                "approved_cost": {"type": "number", "description": "The exact cost_usd from video_factory_quote_enhancement. Required."},
+            },
+            "required": ["operation", "video_url", "approved_cost"],
+        },
+    },
+    {
+        "name": "video_factory_check_job",
+        "description": "Read-only. Checks the status of a job that timed out waiting, or that another tool call started.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "video_factory_list_my_videos",
+        "description": "Read-only. Lists recent images/videos already generated, newest first.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+HANDLERS = {
+    "video_factory_get_info": h_get_info,
+    "video_factory_quote_images": h_quote_images,
+    "video_factory_create_images": h_create_images,
+    "video_factory_quote_video": h_quote_video,
+    "video_factory_create_video": h_create_video,
+    "video_factory_quote_enhancement": h_quote_enhancement,
+    "video_factory_enhance_video": h_enhance_video,
+    "video_factory_check_job": h_check_job,
+    "video_factory_list_my_videos": h_list_my_videos,
+}
+
+
+# --------------------------------------------------------------- JSON-RPC
+
+def ok(msg_id, result):
+    return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+
+def rpc_error(msg_id, code, message):
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+
+
+def handle_message(msg):
+    method = msg.get("method")
+    msg_id = msg.get("id")
+
+    if method == "initialize":
+        return ok(msg_id, {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "instructions": (
+                "Video Factory generates AI images and videos and can enhance existing "
+                "ones (upscale, subtitles, background removal, lip-sync). EVERY tool whose "
+                "name starts with video_factory_create_ or video_factory_enhance_ spends "
+                "real money and REQUIRES an approved_cost argument. Always call the matching "
+                "video_factory_quote_* tool first, tell the user the exact price, wait for "
+                "their explicit go-ahead, and only then call the paid tool with that exact "
+                "cost_usd as approved_cost. Never guess a price, never skip the quote step, "
+                "and never reuse an old quote after the user changed what they asked for."
+            ),
+        })
+    if method == "notifications/initialized":
+        return None
+    if method == "ping":
+        return ok(msg_id, {})
+    if method == "tools/list":
+        return ok(msg_id, {"tools": TOOLS})
+    if method == "tools/call":
+        params = msg.get("params") or {}
+        name = params.get("name")
+        args = params.get("arguments") or {}
+        handler = HANDLERS.get(name)
+        if not handler:
+            return ok(msg_id, {"content": [{"type": "text", "text": f"Unknown tool '{name}'."}], "isError": True})
+        try:
+            text = handler(args)
+            return ok(msg_id, {"content": [{"type": "text", "text": text}], "isError": False})
+        except Exception as exc:  # noqa: BLE001 - surfaced to the caller as a tool error, not a crash
+            return ok(msg_id, {"content": [{"type": "text", "text": str(exc)}], "isError": True})
+
+    if msg_id is not None:
+        return rpc_error(msg_id, -32601, f"Method not found: {method}")
+    return None  # unrecognized notification -- nothing to reply with
+
+
+def main():
+    log(f"Video Factory MCP server starting, backend at {BASE_URL}")
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            log(f"Ignoring non-JSON line on stdin: {line[:200]}")
+            continue
+        try:
+            response = handle_message(msg)
+        except Exception as exc:  # noqa: BLE001 - never let a bad message kill the process
+            log(f"Error handling message: {exc}")
+            response = rpc_error(msg.get("id"), -32603, str(exc)) if msg.get("id") is not None else None
+        if response is not None:
+            print(json.dumps(response), flush=True)
+
+
+if __name__ == "__main__":
+    main()
