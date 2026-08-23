@@ -82,6 +82,24 @@ def api(method, path, body=None, timeout=300):
         ) from None
 
 
+def positive_int_arg(args, key, default):
+    """args.get(key) or default treats an explicitly-passed 0 the same as
+    "omitted" and silently substitutes the default -- for a PAID tool,
+    that means a caller asking for 0 of something gets billed for the
+    default amount instead of a clear rejection (and, for count in
+    particular, it was quietly defeating h_quote_images's own `1 <=
+    count <= 6` check, since the check ran on the already-substituted 5,
+    never on the real 0 that was passed in). Missing/None uses the
+    default unchanged; any explicit non-positive value raises instead."""
+    value = args.get(key)
+    if value is None:
+        return default
+    value = int(value)
+    if value <= 0:
+        raise RuntimeError(f"{key} must be a positive number, got {value}.")
+    return value
+
+
 def media_url(path):
     """Postprod results come back as server-relative paths (/media/...);
     still/video results are already absolute fal CDN URLs. Normalize both
@@ -149,7 +167,7 @@ def h_get_info(_args):
 
 def h_quote_images(args):
     cfg = api("GET", "/api/config")
-    count = int(args.get("count") or 5)
+    count = positive_int_arg(args, "count", 5)
     if not 1 <= count <= 6:
         raise RuntimeError("count must be between 1 and 6.")
     cost = round(cfg["image_cost"] * count, 4)
@@ -161,7 +179,7 @@ def h_create_images(args):
     prompt = (args.get("prompt") or "").strip()
     if not prompt:
         raise RuntimeError("prompt is required.")
-    count = int(args.get("count") or 5)
+    count = positive_int_arg(args, "count", 5)
     approved = args.get("approved_cost")
     if approved is None:
         raise RuntimeError(
@@ -187,7 +205,7 @@ def h_create_images(args):
 
 
 def h_quote_video(args):
-    seconds = int(args.get("seconds") or 6)
+    seconds = positive_int_arg(args, "seconds", 6)
     quote = api("POST", "/api/quote", {"seconds": seconds})
     return (f"{quote['shown_as']}. Call video_factory_create_video with "
             f"approved_cost={quote['cost_usd']} and seconds={seconds} to proceed.")
@@ -201,7 +219,7 @@ def h_create_video(args):
             "video_factory_create_images and pass one of its URLs here. Video is always "
             "animated from a chosen image, never invented from text alone."
         )
-    seconds = int(args.get("seconds") or 6)
+    seconds = positive_int_arg(args, "seconds", 6)
     approved = args.get("approved_cost")
     if approved is None:
         raise RuntimeError(
