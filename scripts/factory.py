@@ -20,8 +20,17 @@ Usage:
                      --i-approve-cost 1.20
   factory.py fetch   --url URL --out work/clips/03.mp4
   factory.py probe   --file work/clips/03.mp4
+  factory.py frames  --file work/clips/03.mp4 --count 3 --out work/qc/S03
+  factory.py polish  --file work/clips/03.mp4 --deflicker --smooth --out work/polished/03.mp4
+  factory.py upscale --file work/final.mp4 --tier upto1080p --i-approve-cost 1.20
+  factory.py lipsync --file work/clips/03.mp4 --audio work/voice/03.wav --i-approve-cost 1.07
+  factory.py subtitles --file work/final.mp4 --lang ru --i-approve-cost 0.02
   factory.py assemble --clips work/clips --out work/final.mp4 [--voice work/voice.mp3]
   factory.py ledger  [--scene-id S]
+
+Post-production (upscale/lipsync/subtitles) are real fal.ai calls, priced
+and gated exactly like rung 3 -- state the cost, approve the exact number,
+nothing runs otherwise. `polish` stays free/local (ffmpeg only).
 """
 
 import argparse
@@ -186,10 +195,51 @@ def fal_upload(path):
 
 
 def resolve_image(ref):
-    """A ref is either an http(s)/data URL already, or a local path to upload."""
+    """A ref is either an http(s)/data URL already, or a local path to upload.
+    Despite the name this uploads any file type -- the post-production
+    commands (upscale/lipsync/subtitles) reuse it for video and audio too."""
     if ref.startswith(("http://", "https://", "data:")):
         return ref
     return fal_upload(ref)
+
+
+def probe_duration(path):
+    """Seconds of media at `path`, via ffprobe. Used to price the
+    duration-billed post-production ops (upscale/lipsync/subtitles) before
+    they run, same discipline as the video rungs."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        die(f"ffprobe failed to read duration for {path}:\n{probe.stderr[:600]}")
+    return float(probe.stdout.strip())
+
+
+def _srt_timestamp(seconds):
+    ms = int(round(max(0.0, seconds) * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def write_srt(chunks, path):
+    """chunks: fal Wizper's [{"timestamp": [start, end], "text": ...}, ...]."""
+    lines = []
+    n = 0
+    for chunk in chunks:
+        text = (chunk.get("text") or "").strip()
+        ts = chunk.get("timestamp") or [0, 0]
+        if not text:
+            continue
+        n += 1
+        lines.append(str(n))
+        lines.append(f"{_srt_timestamp(ts[0])} --> {_srt_timestamp(ts[1])}")
+        lines.append(text)
+        lines.append("")
+    pathlib.Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None):
@@ -478,6 +528,175 @@ def cmd_final(args, cfg):
     emit(record)
 
 
+# ------------------------------------------------------------ post-production
+#
+# Three paid ops beyond the video rungs, each verified against fal's own
+# /api docs page before wiring in (same rule as the rung-3 models -- see
+# fal-master-prompt.md section 5). Each follows rung 3's cost discipline:
+# state the price, refuse to run without --i-approve-cost matching it.
+
+def upscale_rate(args, cfg):
+    rates = cfg["rates"]["upscale_per_second_usd_by_tier"]
+    rate = rates.get(args.tier)
+    if rate is None:
+        choices = [k for k in rates if not k.startswith("_")]
+        die(f"no rate on file for tier '{args.tier}'. Choices: {choices}")
+    if args.fps and args.fps >= 60:
+        rate *= 2  # fal's own pricing panel: "Price doubles for 60fps output"
+    return rate
+
+
+def cmd_upscale(args, cfg):
+    """Real detail-adding upscale (Topaz Video AI on fal) -- distinct from
+    `polish --upscale`, which is a free local scale+sharpen with no new
+    detail. Priced by OUTPUT resolution tier x duration, so --tier is
+    mandatory and drives the quote; get it wrong and the approved cost
+    won't match what fal actually renders at."""
+    model = cfg["models"]["upscale"]
+    rate = upscale_rate(args, cfg)
+    duration = probe_duration(args.file)
+    cost = round(rate * duration, 4)
+
+    if args.i_approve_cost is None:
+        die(
+            f"upscale costs ${cost} ({duration:.1f}s x ${rate}/s at tier '{args.tier}').\n"
+            f"  Nothing was spent. To proceed, re-run with:  --i-approve-cost {cost}"
+        )
+    if abs(args.i_approve_cost - cost) > 0.005:
+        die(f"approved ${args.i_approve_cost} but this call costs ${cost}. Nothing was spent.")
+
+    video_url = resolve_image(args.file)
+    payload = {"video_url": video_url, "model": args.model, "upscale_factor": args.factor}
+    if args.fps:
+        payload["target_fps"] = args.fps
+
+    record = {"scene_id": args.scene_id, "op": "upscale", "model": model,
+              "duration_seconds": round(duration, 2), "cost_usd": cost}
+    try:
+        result = fal_run(model, payload, max_wait=1800)
+    except Exception as exc:  # noqa: BLE001
+        record.update(status="failed", error=str(exc)[:1500])
+        log_generation(record)
+        emit(record)
+        die(f"upscale failed: {exc}")
+
+    url = first_url(result, "video", "videos")
+    record.update(status="success", output_url=url, request_id=result.get("_request_id"))
+    log_generation(record)
+    if url and args.out:
+        record["local_path"] = str(download(url, args.out))
+    emit(record)
+
+
+def cmd_lipsync(args, cfg):
+    """Sync a separately-recorded or cloned voice track onto an existing
+    clip's mouth movement -- distinct from a video model's own built-in
+    lip-sync (Kling/Veo), which only ever matches audio it generated itself
+    in that same call. Useful for ADR-style dialogue fixes or swapping in a
+    cleaner voice take after the fact."""
+    model = cfg["models"]["lipsync"]
+    rate = cfg["rates"]["lipsync_per_second_usd"]
+    duration = probe_duration(args.file)
+    cost = round(rate * duration, 4)
+
+    if args.i_approve_cost is None:
+        die(
+            f"lipsync costs ${cost} ({duration:.1f}s x ${rate}/s, priced off the video's own "
+            f"length).\n  Nothing was spent. To proceed, re-run with:  --i-approve-cost {cost}"
+        )
+    if abs(args.i_approve_cost - cost) > 0.005:
+        die(f"approved ${args.i_approve_cost} but this call costs ${cost}. Nothing was spent.")
+
+    video_url = resolve_image(args.file)
+    audio_url = resolve_image(args.audio)
+    payload = {"video_url": video_url, "audio_url": audio_url, "sync_mode": args.sync_mode}
+
+    record = {"scene_id": args.scene_id, "op": "lipsync", "model": model,
+              "duration_seconds": round(duration, 2), "cost_usd": cost}
+    try:
+        result = fal_run(model, payload, max_wait=1800)
+    except Exception as exc:  # noqa: BLE001
+        record.update(status="failed", error=str(exc)[:1500])
+        log_generation(record)
+        emit(record)
+        die(f"lipsync failed: {exc}")
+
+    url = first_url(result, "video", "videos")
+    record.update(status="success", output_url=url, request_id=result.get("_request_id"))
+    log_generation(record)
+    if url and args.out:
+        record["local_path"] = str(download(url, args.out))
+    emit(record)
+
+
+def cmd_subtitles(args, cfg):
+    """Transcribe dialogue (fal Wizper) and burn timed captions into the
+    video locally via ffmpeg/libass -- generalizes the manual Cyrillic
+    drawtext burn-in this project already did once for the '25 yil' film
+    into a repeatable command with real per-line timing instead of a
+    hand-placed guess."""
+    model = cfg["models"]["transcribe"]
+    rate = cfg["rates"]["transcription_per_second_usd"]
+    duration = probe_duration(args.file)
+    cost = round(rate * duration, 4)
+
+    if args.i_approve_cost is None:
+        die(
+            f"subtitles cost an estimated ${cost} ({duration:.1f}s x ${rate}/s -- this rate is "
+            f"not confirmed on fal's own pricing page, see config.json's _post_production_note; "
+            f"the real charge should be small either way).\n"
+            f"  Nothing was spent. To proceed, re-run with:  --i-approve-cost {cost}"
+        )
+    if abs(args.i_approve_cost - cost) > 0.005:
+        die(f"approved ${args.i_approve_cost} but this call is estimated at ${cost}. Nothing was spent.")
+
+    audio_url = resolve_image(args.file)  # Wizper accepts mp4 directly, no local extraction needed
+    payload = {"audio_url": audio_url, "task": "transcribe", "chunk_level": "segment"}
+    if args.lang:
+        payload["language"] = args.lang
+
+    record = {"scene_id": args.scene_id, "op": "subtitles", "model": model,
+              "duration_seconds": round(duration, 2), "cost_usd": cost}
+    try:
+        result = fal_run(model, payload, max_wait=600)
+    except Exception as exc:  # noqa: BLE001
+        record.update(status="failed", error=str(exc)[:1500])
+        log_generation(record)
+        emit(record)
+        die(f"transcription failed: {exc}")
+
+    chunks = result.get("chunks") or []
+    if not chunks:
+        record.update(status="failed", error="transcription returned no timed segments")
+        log_generation(record)
+        die("transcription returned no timed segments -- nothing to burn in")
+
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    srt_path = out.with_suffix(".srt")
+    write_srt(chunks, srt_path)
+
+    # ffmpeg's filter graph syntax treats ':' as an option separator, so a
+    # path (esp. on Windows, or with a drive-letter-style prefix) has to be
+    # escaped before it can sit inside -vf.
+    escaped_srt = str(srt_path).replace("\\", "\\\\").replace(":", "\\:")
+    style = args.style or cfg["defaults"]["subtitles"]["force_style"]
+    vf = f"subtitles={escaped_srt}:force_style='{style}'"
+    res = subprocess.run(
+        ["ffmpeg", "-y", "-i", args.file, "-vf", vf,
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+         "-c:a", "copy", str(out)],
+        capture_output=True, text=True, check=False,
+    )
+    if res.returncode != 0:
+        die(f"ffmpeg subtitle burn-in failed:\n{res.stderr[-1500:]}")
+
+    record.update(status="success", request_id=result.get("_request_id"),
+                  local_path=str(out), srt_path=str(srt_path))
+    log_generation(record)
+    emit(record)
+
+
 # ---------------------------------------------------------------- local ops
 
 def download(url, out_path):
@@ -521,14 +740,7 @@ def cmd_frames(args, cfg):
     """Pull N evenly-spaced frames from a clip for identity/artifact review.
     A still-only face check can't catch drift that happens mid-motion --
     this is what makes checking the rendered output possible at all."""
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", args.file],
-        capture_output=True, text=True, check=False,
-    )
-    if probe.returncode != 0 or not probe.stdout.strip():
-        die(f"ffprobe failed to read duration:\n{probe.stderr[:600]}")
-    duration = float(probe.stdout.strip())
+    duration = probe_duration(args.file)
 
     out_dir = pathlib.Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +774,12 @@ def cmd_polish(args, cfg):
     and upscale/sharpen. No API calls, no cost -- just ffmpeg."""
     grade = cfg["defaults"]["polish"]["grade_filter"]
     filters = [grade] if args.grade else []
+    if args.deflicker:
+        # Removes frame-to-frame luminance flicker -- a common generated-video
+        # tell that reads as "artificial" independent of anything the prompt
+        # controls. Free, local, ffmpeg native (see fal-master-prompt.md 3.1
+        # for the rest of the naturalness rules this complements).
+        filters.append("deflicker=size=5:mode=am")
     if args.smooth:
         fps = cfg["defaults"]["polish"]["smooth_fps"]
         filters.append(
@@ -770,8 +988,43 @@ def main():
     p.add_argument("--smooth", action="store_true",
                     help="motion-compensated frame interpolation (smoother motion, slower to render)")
     p.add_argument("--upscale", help="target resolution for scale+sharpen, e.g. 3840:2160")
+    p.add_argument("--deflicker", action="store_true",
+                    help="remove temporal luminance flicker between frames (free, ffmpeg native)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_polish)
+
+    p = sub.add_parser("upscale", help="real detail-adding upscale (Topaz on fal) -- paid, needs --i-approve-cost")
+    p.add_argument("--scene-id")
+    p.add_argument("--file", required=True)
+    p.add_argument("--tier", required=True, choices=["le720p", "upto1080p", "above1080p"],
+                    help="OUTPUT resolution tier -- sets the per-second rate, see config.json")
+    p.add_argument("--model", default="Proteus",
+                    help="Topaz model name (default Proteus -- verify other spellings on the fal "
+                         "playground before use, see rates._note in config.json)")
+    p.add_argument("--factor", type=float, default=2, help="upscale_factor, e.g. 2 doubles width/height")
+    p.add_argument("--fps", type=int, help="target output fps (60 doubles the rate)")
+    p.add_argument("--i-approve-cost", type=float, default=None)
+    p.add_argument("--out", default=str(WORK / "upscaled"))
+    p.set_defaults(func=cmd_upscale)
+
+    p = sub.add_parser("lipsync", help="sync a separate voice track onto an existing clip -- paid, needs --i-approve-cost")
+    p.add_argument("--scene-id")
+    p.add_argument("--file", required=True, help="the video to lip-sync")
+    p.add_argument("--audio", required=True, help="the voice track to sync onto it")
+    p.add_argument("--sync-mode", default="cut_off",
+                    choices=["cut_off", "loop", "bounce", "silence", "remap"])
+    p.add_argument("--i-approve-cost", type=float, default=None)
+    p.add_argument("--out", default=str(WORK / "lipsync"))
+    p.set_defaults(func=cmd_lipsync)
+
+    p = sub.add_parser("subtitles", help="transcribe dialogue and burn timed captions in -- paid (small), needs --i-approve-cost")
+    p.add_argument("--scene-id")
+    p.add_argument("--file", required=True)
+    p.add_argument("--lang", help="language code, e.g. 'ru' -- omit to auto-detect")
+    p.add_argument("--style", help="override the default ASS force_style string from config.json")
+    p.add_argument("--i-approve-cost", type=float, default=None)
+    p.add_argument("--out", default=str(WORK / "subtitled.mp4"))
+    p.set_defaults(func=cmd_subtitles)
 
     p = sub.add_parser("assemble", help="stitch clips + voiceover with ffmpeg")
     p.add_argument("--clips", default=str(WORK / "clips"))

@@ -10,7 +10,10 @@
     "final_take":   "fal-ai/kling-video/v3/standard/image-to-video",
     "final_take_alt_veo":      "fal-ai/veo3.1/image-to-video",
     "final_take_alt_seedance": "bytedance/seedance-2.0/image-to-video",
-    "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video"
+    "final_take_alt_ltx":      "fal-ai/ltx-2.3/image-to-video",
+    "upscale":    "fal-ai/topaz/upscale/video",
+    "lipsync":    "fal-ai/sync-lipsync/v3",
+    "transcribe": "fal-ai/wizper"
   },
 
   "rates": {
@@ -22,7 +25,16 @@
       "bytedance/seedance-2.0/image-to-video": 0.3024,
       "fal-ai/ltx-2.3/image-to-video": 0.06,
       "_note": "Keyed by exact fal model id, not a nickname. cmd_cost/cmd_final refuse to run for a --model not listed here, rather than guess a price -- add the real per-second rate first (check fal.ai/pricing). LTX-2.3's 0.06 is the 1080p tier; 1440p is 0.12 and 4K is 0.24 -- add those as separate model ids (e.g. with a resolution suffix) if a shot needs them, don't silently reuse this rate at a different resolution."
-    }
+    },
+    "upscale_per_second_usd_by_tier": {
+      "le720p": 0.01,
+      "upto1080p": 0.02,
+      "above1080p": 0.08,
+      "_note": "fal-ai/topaz/upscale/video, keyed by OUTPUT resolution tier (not input) -- confirmed from that model's own pricing panel on fal.ai. cmd_upscale doubles this automatically for --fps 60+. Some Topaz model variants (e.g. a 'Gaia 2' one) reportedly bill about half this on fal's panel, but the exact enum spelling wasn't confirmed against the live schema so that discount isn't auto-applied -- treat the quoted number as an upper bound if you pick a Gaia-family --model."
+    },
+    "lipsync_per_second_usd": 0.1333,
+    "transcription_per_second_usd": 0.0008,
+    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) is confirmed from fal-ai/sync-lipsync/v3's own pricing panel. transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
   },
 
   "defaults": {
@@ -37,7 +49,11 @@
     "polish": {
       "grade_filter": "eq=contrast=1.08:saturation=1.15:gamma=0.97,curves=all='0/0 0.22/0.16 0.5/0.5 0.78/0.84 1/1',vignette=PI/6,noise=alls=5:allf=t+u",
       "smooth_fps": 48,
-      "_note": "Free, local, ffmpeg-only -- no fal cost. Mild filmic S-curve + vignette + fine grain. smooth_fps doubles 24fps source via motion-compensated interpolation when --smooth is passed."
+      "_note": "Free, local, ffmpeg-only -- no fal cost. Mild filmic S-curve + vignette + fine grain. smooth_fps doubles 24fps source via motion-compensated interpolation when --smooth is passed. --deflicker (also free/local) is a separate flag, not folded into this filter chain."
+    },
+    "subtitles": {
+      "force_style": "FontName=DejaVu Sans,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,MarginV=40",
+      "_note": "DejaVu Sans is confirmed to render Cyrillic correctly -- verified during the '25 yil' film's manual drawtext burn-in. Keep this font unless a replacement is verified the same way (missing glyphs render as boxes, easy to miss in a quick preview)."
     }
   },
 

@@ -309,3 +309,22 @@ do not alter the face, no text, no watermark
 The point of the whole system is that the second video reuses the first
 video's solved shots. A template library that isn't growing means the cost per
 scene will not fall.
+
+## 7. Post-production toolkit — beyond the video rungs
+
+Four commands exist for polish that no video-generation call can give you,
+each verified against fal's own `/api` docs before wiring in (same rule as
+section 5). Three are paid and follow rung 3's exact discipline: state the
+cost, approve the exact number, nothing runs otherwise. One is free.
+
+| Command | Cost | What it's for | Use when |
+|---|---|---|---|
+| `polish --deflicker` | Free (ffmpeg, local) | Removes frame-to-frame luminance flicker — a generated-video tell that reads as "artificial" independent of anything the prompt controls. | Every final clip, by default. It's free — there's no reason to skip it. Complements section 3.1's ambient-motion rules; it doesn't replace them. |
+| `upscale` | $0.01–0.08/s by output tier (`fal-ai/topaz/upscale/video`) | Real detail-adding upscale — distinct from `polish --upscale`'s free scale+sharpen, which adds no new information. | The final assembled cut only, once, not every rung-2/3 test — this is expensive enough that upscaling a take you might discard is wasted money. `--tier` must match the real output resolution or the approved cost won't match what fal bills. |
+| `lipsync` | ~$0.1333/s (`fal-ai/sync-lipsync/v3`, $8/min) | Syncs a separately-recorded or cloned voice onto an existing clip's mouth movement — ADR-style fixes, or swapping in a cleaner voice take after the fact. | Only when the video's own built-in audio (Kling/Veo's `generate_audio`) isn't good enough and a real voice performance needs to be dropped in instead. Not a default step. |
+| `subtitles` | ~$0.0008/s, **rate unconfirmed** — see `config.json`'s `_post_production_note` (`fal-ai/wizper`) | Transcribes dialogue and burns real per-line-timed captions in via ffmpeg/libass, using `DejaVu Sans` (confirmed to render Cyrillic correctly). | Any film with dialogue in a script that needs on-screen text — replaces hand-timing a drawtext burn-in the way this project did once for "25 yil." |
+
+`upscale`/`lipsync` accept local files directly — `resolve_image()` uploads
+any file type despite its name, video and audio included. `subtitles` feeds
+the whole video file straight to Wizper (it accepts mp4 natively), no local
+audio-extraction step needed.
