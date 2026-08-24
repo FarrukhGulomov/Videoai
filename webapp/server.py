@@ -144,6 +144,31 @@ def _require_public_url(value, field_name, allow_data=False):
     return value
 
 
+def _require_seedance25_ratio(model, image_url):
+    """Web-native mirror of factory.require_seedance25_ratio: Seedance
+    2.5's rate in config.json is a 16:9-only approximation of fal's real
+    token-based (width x height x duration) pricing, confirmed to vary by
+    aspect ratio on fal's own docs. Re-implemented here (rather than
+    calling the CLI version directly) because factory.die() raises
+    SystemExit with just an exit code, not a message -- catching it here
+    would lose the actual reason; this raises ValueError with the real
+    text instead, same fix already applied to postprod's probe_duration
+    calls below. A no-op for every other model."""
+    if "seedance-2.5" not in model and "seedance/2.5" not in model:
+        return
+    try:
+        w, h = factory.probe_image_dimensions(image_url)
+    except SystemExit:
+        raise ValueError("Could not read that image's dimensions — is the URL still reachable?") from None
+    ratio = w / h
+    if abs(ratio - 16 / 9) > 0.03:
+        raise ValueError(
+            f"Seedance 2.5 only supports 16:9 shots (its price is a 16:9-only approximation "
+            f"of fal's real pricing, which genuinely varies by aspect ratio). Your image is "
+            f"{w}x{h} ({ratio:.2f}:1). Pick a different model, or a 16:9 image."
+        )
+
+
 # ------------------------------------------------------------------- presets
 
 # Grounded in fal-master-prompt.md: explicit camera choreography, the
@@ -571,6 +596,46 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
         _persist(job)
 
 
+def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, cost, charge_user_id):
+    """Turns a photo + voice track into a talking-head video (OmniHuman).
+    `cost` is computed once up front (by _generate_avatar, from the audio's
+    real probed duration) and threaded through unchanged -- not
+    recomputed here -- so the amount actually charged always matches the
+    number the caller approved, the same discipline every other paid
+    worker in this file follows."""
+    _update(job_id, status="running", stage="Sending to fal.ai…")
+    try:
+        model = CONFIG["models"]["avatar"]
+        payload = {"image_url": image_url, "audio_url": audio_url, "resolution": resolution}
+        if prompt:
+            payload["prompt"] = prompt
+        if turbo:
+            payload["turbo_mode"] = True
+
+        _update(job_id, stage="Animating the photo — this can take a few minutes…")
+        result = factory.fal_run(model, payload, max_wait=1800)
+        url = factory.first_url(result, "video", "videos")
+
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": "avatar", "model": model,
+            "cost_usd": cost, "status": "success", "output_url": url,
+            "request_id": result.get("_request_id"),
+        })
+        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} avatar")
+        job = _update(job_id, status="done", stage="Done",
+                      outputs=[url] if url else [],
+                      request_id=result.get("_request_id"), credit_deducted=deducted)
+        _persist(job)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": "avatar",
+            "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
+        })
+        job = _update(job_id, status="error", stage="Failed",
+                      error=friendly_error(exc), error_raw=str(exc)[:1500])
+        _persist(job)
+
+
 # ------------------------------------------------------------------- handler
 
 class Handler(BaseHTTPRequestHandler):
@@ -697,6 +762,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._quote_postprod(body)
             if path == "/api/postprod/run":
                 return self._generate_postprod(body)
+            if path == "/api/avatar/quote":
+                return self._quote_avatar(body)
+            if path == "/api/avatar/run":
+                return self._generate_avatar(body)
             return self._send(404, {"error": "Unknown endpoint."})
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
@@ -708,14 +777,29 @@ class Handler(BaseHTTPRequestHandler):
 
     def _config_payload(self):
         """Everything the UI needs to render. Deliberately contains no
-        secrets — this response is safe to log or screenshot."""
+        secrets — this response is safe to log or screenshot.
+
+        Every model is listed -- including the two expensive "top quality,
+        cost no object" ones -- rather than hidden behind a picker only
+        power users find. `tier` lets the UI group them (budget/standard/
+        premium) so a price-conscious user sees Kling first and a
+        quality-first user can deliberately reach past it, without either
+        one being hidden from the other."""
         rates = CONFIG["rates"]["final_take_per_second_usd_by_model"]
         models = [
             {
+                "id": CONFIG["models"]["final_take_alt_ltx"],
+                "name": "LTX-2.3",
+                "note": "Cheapest option. Long single takes up to 20s.",
+                "rate": rates[CONFIG["models"]["final_take_alt_ltx"]],
+                "tier": "budget",
+            },
+            {
                 "id": CONFIG["models"]["final_take"],
                 "name": "Kling 3.0",
-                "note": "Best all-round motion. Cheapest.",
+                "note": "Best all-round motion. Recommended default.",
                 "rate": rates[CONFIG["models"]["final_take"]],
+                "tier": "standard",
                 "default": True,
             },
             {
@@ -723,12 +807,29 @@ class Handler(BaseHTTPRequestHandler):
                 "name": "Veo 3.1",
                 "note": "Strongest face fidelity for close-ups.",
                 "rate": rates[CONFIG["models"]["final_take_alt_veo"]],
+                "tier": "standard",
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance"],
                 "name": "Seedance 2.0",
-                "note": "Best physics and camera precision. Premium.",
+                "note": "Best physics and camera precision.",
                 "rate": rates[CONFIG["models"]["final_take_alt_seedance"]],
+                "tier": "premium",
+            },
+            {
+                "id": CONFIG["models"]["final_take_alt_flux3"],
+                "name": "FLUX 3",
+                "note": "Black Forest Labs' newest model. Native audio, up to 20s.",
+                "rate": rates[CONFIG["models"]["final_take_alt_flux3"]],
+                "tier": "premium",
+            },
+            {
+                "id": CONFIG["models"]["final_take_alt_seedance25"],
+                "name": "Seedance 2.5",
+                "note": "Highest quality available. 16:9 shots only, significantly pricier.",
+                "rate": rates[CONFIG["models"]["final_take_alt_seedance25"]],
+                "tier": "premium",
+                "aspect_ratio_lock": "16:9",
             },
         ]
         upscale_tiers = {k: v for k, v in CONFIG["rates"]["upscale_per_second_usd_by_tier"].items()
@@ -744,6 +845,10 @@ class Handler(BaseHTTPRequestHandler):
                 "lipsync_rate": CONFIG["rates"]["lipsync_per_second_usd"],
                 "subtitles_rate": CONFIG["rates"]["transcription_per_second_usd"],
                 "bgremove_rate": CONFIG["rates"]["bg_remove_per_second_usd"],
+            },
+            "avatar": {
+                "rate": CONFIG["rates"]["avatar_per_second_usd"],
+                "resolutions": ["720p", "1080p"],
             },
         }
 
@@ -953,6 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
         rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
         if rate is None:
             raise ValueError("That model has no price on file, so it cannot be run.")
+        _require_seedance25_ratio(model, image_url)
 
         cost = round(rate * seconds, 4)
         approved = body.get("approved_cost")
@@ -1030,6 +1136,59 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(
             target=_run_postprod_job,
             args=(job["id"], op, file_url, body, model, cost, charge_user_id),
+            daemon=True,
+        ).start()
+        return self._send(202, job)
+
+    # -- talking avatar (image + voice track -> new video) ---------------
+
+    def _quote_avatar(self, body):
+        """Price a talking-avatar generation without spending anything.
+        Priced off the voice track's own probed length, same as lipsync."""
+        image_url = _require_public_url(body.get("image_url"), "Photo")
+        audio_url = _require_public_url(body.get("audio_url"), "Voice track")
+        rate = CONFIG["rates"]["avatar_per_second_usd"]
+        try:
+            duration = factory.probe_duration(audio_url)
+        except SystemExit:
+            raise ValueError("Could not read that audio file's duration — is the URL still reachable?") from None
+        cost = round(rate * duration, 4)
+        return self._send(200, {
+            "duration_seconds": round(duration, 2), "rate": rate, "cost_usd": cost,
+            "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
+        })
+
+    def _generate_avatar(self, body):
+        image_url = _require_public_url(body.get("image_url"), "Photo")
+        audio_url = _require_public_url(body.get("audio_url"), "Voice track")
+        prompt = (body.get("prompt") or "").strip()
+        resolution = body.get("resolution") or "1080p"
+        if resolution not in ("720p", "1080p"):
+            raise ValueError("Resolution must be 720p or 1080p.")
+        turbo = bool(body.get("turbo"))
+
+        rate = CONFIG["rates"]["avatar_per_second_usd"]
+        try:
+            duration = factory.probe_duration(audio_url)
+        except SystemExit:
+            raise ValueError("Could not read that audio file's duration — is the URL still reachable?") from None
+        cost = round(rate * duration, 4)
+
+        approved = body.get("approved_cost")
+        if approved is None:
+            raise ValueError(f"This costs ${cost}. Confirm the cost to continue.")
+        if abs(float(approved) - cost) > 0.005:
+            raise ValueError(
+                f"The price changed to ${cost} since it was quoted. "
+                "Nothing was charged — re-confirm to continue."
+            )
+
+        owner, charge_user_id = self._require_funded_user(cost)
+
+        job = _new_job("avatar", owner, cost_usd=cost, duration_seconds=round(duration, 2))
+        threading.Thread(
+            target=_run_avatar_job,
+            args=(job["id"], image_url, audio_url, prompt, resolution, turbo, cost, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
