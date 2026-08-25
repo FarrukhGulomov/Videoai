@@ -314,6 +314,36 @@ def write_srt(chunks, path):
     pathlib.Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
+# Every model's real, fal-documented duration constraint (verified against
+# each model's own /api schema page -- never guessed, since sending an
+# unsupported value either wastes a real API call on a 422 or, worse for
+# the webapp, risks a quote that no longer matches what fal would actually
+# charge). Presented here as a short, evenly-spaced list of "nice" values
+# within the real valid range -- for models with a wide range (Kling,
+# Seedance 2.0/2.5, FLUX 3) rather than every single accepted integer,
+# since a picker with 27 buttons isn't more useful than one with 3-5.
+# Veo 3.1 and LTX-2.3 (Pro variant, the exact endpoint this project uses --
+# not the Fast variant, which has a wider range) have a real, narrow,
+# hard-coded enum on fal's side, so their lists here are that enum exactly.
+FINAL_TAKE_DURATIONS = {
+    "fal-ai/kling-video/v3/standard/image-to-video": [5, 10, 15],   # fal enum: 3-15
+    "fal-ai/veo3.1/image-to-video": [4, 6, 8],                       # fal enum: 4, 6, 8 only
+    "bytedance/seedance-2.0/image-to-video": [5, 10, 15],            # fal enum: auto, 4-15
+    "fal-ai/ltx-2.3/image-to-video": [6, 8, 10],                     # fal enum: 6, 8, 10 only (Pro)
+    "blackforestlabs/flux-3/image-to-video": [5, 10, 15, 20],        # fal enum: auto, 5-20
+    "bytedance/seedance-2.5/image-to-video": [5, 10, 15, 20, 30],    # fal enum: auto, 4-30
+}
+DEFAULT_DURATION_OPTIONS = [4, 6, 8]
+
+
+def duration_options_for_model(model):
+    """The durations a caller may legitimately pick for this model. Falls
+    back to the conservative default (valid for every model this project
+    has ever wired) for anything not in the table -- e.g. a --model
+    override to something brand new that hasn't been verified yet."""
+    return FINAL_TAKE_DURATIONS.get(model, DEFAULT_DURATION_OPTIONS)
+
+
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None, shots=None):
     """Veo, Kling, Seedance, FLUX, and LTX each take a differently-shaped payload. Branch on model family."""
     if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx")):

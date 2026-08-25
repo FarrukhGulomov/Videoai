@@ -262,7 +262,6 @@ PRESETS = [
 ]
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3"]
-DURATIONS = [4, 6, 8]
 
 # Whitelist for the subtitles "style" param, which is embedded unquoted
 # inside an ffmpeg -vf filtergraph string (force_style='...'). A value
@@ -407,7 +406,7 @@ def friendly_error(exc):
     if "FAL_KEY is not set" in text or "FAL_KEY" in text and "not set" in text:
         return "No fal.ai API key is configured on the server. Set FAL_KEY and restart."
     if "422" in text and "duration" in text:
-        return "This model does not accept that duration. Pick 4, 6, or 8 seconds."
+        return "This model does not accept that duration. Try one of its listed length options."
     if "network error" in text or "timed out" in text:
         return "Could not reach fal.ai. Check the connection and try again."
     if "no rate on file" in text:
@@ -804,9 +803,10 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "id": CONFIG["models"]["final_take_alt_ltx"],
                 "name": "LTX-2.3",
-                "note": "Cheapest option. Long single takes up to 20s.",
+                "note": "Cheapest option.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_ltx"]]),
                 "tier": "budget",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_ltx"]),
             },
             {
                 "id": CONFIG["models"]["final_take"],
@@ -815,6 +815,7 @@ class Handler(BaseHTTPRequestHandler):
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take"]]),
                 "tier": "standard",
                 "default": True,
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_veo"],
@@ -822,6 +823,7 @@ class Handler(BaseHTTPRequestHandler):
                 "note": "Strongest face fidelity for close-ups.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_veo"]]),
                 "tier": "standard",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_veo"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance"],
@@ -829,6 +831,7 @@ class Handler(BaseHTTPRequestHandler):
                 "note": "Best physics and camera precision.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_seedance"]]),
                 "tier": "premium",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_seedance"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_flux3"],
@@ -836,6 +839,7 @@ class Handler(BaseHTTPRequestHandler):
                 "note": "Black Forest Labs' newest model. Native audio, up to 20s.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_flux3"]]),
                 "tier": "premium",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_flux3"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance25"],
@@ -844,6 +848,7 @@ class Handler(BaseHTTPRequestHandler):
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_seedance25"]]),
                 "tier": "premium",
                 "aspect_ratio_lock": "16:9",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_seedance25"]),
             },
         ]
         upscale_tiers = {k: _retail_rate(v) for k, v in CONFIG["rates"]["upscale_per_second_usd_by_tier"].items()
@@ -852,7 +857,6 @@ class Handler(BaseHTTPRequestHandler):
             "models": models,
             "presets": PRESETS,
             "aspect_ratios": ASPECT_RATIOS,
-            "durations": DURATIONS,
             "image_cost": _retail_rate(CONFIG["rates"]["still_per_image_usd"]),
             "postprod": {
                 "upscale_tiers": upscale_tiers,
@@ -978,9 +982,10 @@ class Handler(BaseHTTPRequestHandler):
         """Price a paid call without spending anything — the web equivalent
         of `factory.py cost`."""
         model = body.get("model") or CONFIG["models"]["final_take"]
-        seconds = int(body.get("seconds") or 6)
-        if seconds not in DURATIONS:
-            raise ValueError(f"Duration must be one of {DURATIONS} seconds.")
+        valid_durations = factory.duration_options_for_model(model)
+        seconds = int(body.get("seconds") or valid_durations[0])
+        if seconds not in valid_durations:
+            raise ValueError(f"This model supports these durations: {valid_durations} seconds.")
         wholesale_rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
         if wholesale_rate is None:
             raise ValueError("That model has no price on file, so it cannot be run.")
@@ -1066,14 +1071,16 @@ class Handler(BaseHTTPRequestHandler):
         if end_image_url:
             end_image_url = _require_public_url(end_image_url, "End frame image", allow_data=True)
 
-        seconds = int(body.get("seconds") or 6)
-        if seconds not in DURATIONS:
-            raise ValueError(f"Duration must be one of {DURATIONS} seconds.")
-
         model = body.get("model") or CONFIG["models"]["final_take"]
         wholesale_rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
         if wholesale_rate is None:
             raise ValueError("That model has no price on file, so it cannot be run.")
+
+        valid_durations = factory.duration_options_for_model(model)
+        seconds = int(body.get("seconds") or valid_durations[0])
+        if seconds not in valid_durations:
+            raise ValueError(f"This model supports these durations: {valid_durations} seconds.")
+
         _require_seedance25_ratio(model, image_url)
 
         rate = _retail_rate(wholesale_rate)
