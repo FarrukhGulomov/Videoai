@@ -32,6 +32,7 @@
   <button id="tab-create" class="tab is-active" type="button" data-i18n="nav.create">Yaratish</button>
   <button id="tab-avatar" class="tab" type="button" data-i18n="nav.avatar">Avatar</button>
   <button id="tab-history" class="tab" type="button" data-i18n="nav.history">Videolarim</button>
+  <button id="tab-mcp" class="tab" type="button" data-i18n="nav.mcp">MCP</button>
 </nav>
 
 <main>
@@ -177,6 +178,67 @@
     <h2 data-i18n="history.title">Mening videolarim</h2>
     <p class="muted" data-i18n="history.subtitle">Barcha yaratganlaringiz, eng yangisidan boshlab</p>
     <div id="history-list" class="results"></div>
+  </section>
+
+  <!-- ============ MCP / API ============ -->
+  <section id="view-mcp" class="view" hidden>
+    <h2 data-i18n="mcp.title">Claude va ChatGPT-ni ulash</h2>
+    <p class="muted" data-i18n="mcp.subtitle">Video yaratishni Claude yoki ChatGPT ichidan, to'g'ridan-to'g'ri buyruq berib boshqaring</p>
+
+    <section class="step" aria-labelledby="mcp-what">
+      <div class="step-head">
+        <div>
+          <h3 id="mcp-what" data-i18n="mcp.what.title">MCP nima?</h3>
+          <p class="muted" data-i18n="mcp.what.body">Model Context Protocol — Claude yoki ChatGPT-ga ushbu loyihaning suratlar, videolar va avatar yaratish imkoniyatlarini "vositalar" sifatida beradi. Ulangach, shunchaki oddiy so'zlar bilan so'rasangiz bo'ldi: "meniki uchun quyosh botayotgan sohilda video yasab ber" — narxni birinchi ko'rsatadi, tasdiqlagandan keyingina pul sarflaydi.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="step" aria-labelledby="mcp-desktop">
+      <div class="step-head">
+        <span class="step-num">1</span>
+        <div>
+          <h3 id="mcp-desktop" data-i18n="mcp.claudeDesktop.title">Claude Desktop</h3>
+          <p class="muted" data-i18n="mcp.claudeDesktop.body">mcp/server.py faylini yuklab oling, so'ng quyidagi blokni claude_desktop_config.json fayliga qo'shing va Claude Desktop-ni qayta ishga tushiring.</p>
+        </div>
+      </div>
+      <p><a id="mcp-download-link" class="btn ghost small" href="/mcp/server.py" download="server.py" data-i18n="mcp.download">server.py yuklab olish</a></p>
+      <p class="muted small" data-i18n="mcp.claudeDesktop.path">Fayl joylashuvi: macOS'da ~/Library/Application Support/Claude/claude_desktop_config.json, Windows'da %APPDATA%\Claude\claude_desktop_config.json</p>
+      <div id="mcp-claude-desktop-block"></div>
+    </section>
+
+    <section class="step" aria-labelledby="mcp-code">
+      <div class="step-head">
+        <span class="step-num">2</span>
+        <div>
+          <h3 id="mcp-code" data-i18n="mcp.claudeCode.title">Claude Code</h3>
+          <p class="muted" data-i18n="mcp.claudeCode.body">Terminalda ushbu buyruqni ishga tushiring (avval yuqoridagi tugma orqali server.py-ni yuklab oling).</p>
+        </div>
+      </div>
+      <div id="mcp-claude-code-block"></div>
+    </section>
+
+    <section class="step" aria-labelledby="mcp-gpt">
+      <div class="step-head">
+        <span class="step-num">3</span>
+        <div>
+          <h3 id="mcp-gpt" data-i18n="mcp.chatgpt.title">Masofaviy ulanish (Claude Desktop Connectors yoki ChatGPT)</h3>
+          <p class="muted" data-i18n="mcp.chatgpt.body">Kompyuteringizda hech narsa o'rnatmasdan ulanishning yo'li: Claude Desktop'da Settings → Connectors → Add custom connector, yoki ChatGPT'da Settings → Connectors → Add custom connector bo'limiga quyidagi manzil va tokenni kiriting. Bu bitta yechim ikkalasiga ham ishlaydi, chunki ikkalasi ham bir xil masofaviy MCP protokolini gapiradi.</p>
+        </div>
+      </div>
+      <div id="mcp-chatgpt-block"></div>
+      <p class="muted small" data-i18n="mcp.chatgpt.uiNote">Ulanish qadamlari ilova versiyasiga qarab biroz farq qilishi mumkin — aniq qadamlar uchun Claude yoki ChatGPT'ning joriy sozlamalar bo'limiga qarang.</p>
+    </section>
+
+    <section class="step" aria-labelledby="mcp-tools">
+      <div class="step-head">
+        <div>
+          <h3 id="mcp-tools" data-i18n="mcp.tools.title">Nima qila oladi</h3>
+          <p class="muted" data-i18n="mcp.tools.body">Har bir pullik amaldan oldin narx ko'rsatiladi va faqat aynan shu narxni tasdiqlagandan keyingina bajariladi — Claude yoki ChatGPT sizdan so'ramasdan pul sarflay olmaydi.</p>
+        </div>
+      </div>
+      <ul id="mcp-tools-list" class="mcp-tools-list"></ul>
+    </section>
   </section>
 </main>
 

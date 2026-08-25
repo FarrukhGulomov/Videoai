@@ -142,6 +142,7 @@
       renderAuthBar();
       renderHealthBadge();
       if (state.config) updatePostprodParamsIfOpen();
+      if (state.config && !$("view-mcp").hidden) renderMcpView();
     });
   }
 
@@ -475,22 +476,92 @@
     return (state.config?.models || []).find((m) => m.id === state.selectedModel) || null;
   }
 
+  // ------------------------------------------------------------------ MCP
+
+  /* Code/config snippets are left in their native technical format
+     (JSON, shell) rather than translated -- same convention this project
+     already uses for every other technical string on the site. Only the
+     surrounding explanatory copy is localized. */
+  function codeBlock(text) {
+    const pre = el("pre", { class: "code-pre" }, el("code", { text }));
+    const copyBtn = el("button", {
+      class: "code-copy", type: "button", text: t("mcp.copy"),
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(text);
+          copyBtn.textContent = t("mcp.copied");
+        } catch {
+          copyBtn.textContent = t("mcp.copyFailed");
+        }
+        setTimeout(() => { copyBtn.textContent = t("mcp.copy"); }, 1800);
+      },
+    });
+    return el("div", { class: "code-block" }, copyBtn, pre);
+  }
+
+  const MCP_TOOLS = [
+    "getInfo", "quoteImages", "createImages", "quoteVideo", "createVideo",
+    "quoteEnhancement", "enhanceVideo", "quoteAvatar", "createAvatar",
+    "checkJob", "listVideos",
+  ];
+
+  function renderMcpView() {
+    const origin = window.location.origin;
+
+    setPanel($("mcp-claude-desktop-block"), codeBlock(
+`{
+  "mcpServers": {
+    "video-factory": {
+      "command": "python3",
+      "args": ["/path/to/server.py"],
+      "env": {
+        "VIDEO_FACTORY_URL": "${origin}"
+      }
+    }
+  }
+}`));
+
+    setPanel($("mcp-claude-code-block"), codeBlock(
+`claude mcp add video-factory python3 /path/to/server.py \\
+  --env VIDEO_FACTORY_URL=${origin}`));
+
+    const httpUrl = state.config?.mcp?.http_url || "";
+    if (httpUrl) {
+      setPanel($("mcp-chatgpt-block"),
+        el("div", {},
+          codeBlock(`${httpUrl}\nAuthorization: Bearer <your-token>`),
+          el("p", { class: "muted small", text: t("mcp.chatgpt.tokenNote") })));
+    } else {
+      setPanel($("mcp-chatgpt-block"),
+        el("p", { class: "muted small", text: t("mcp.chatgpt.notDeployed") }));
+    }
+
+    $("mcp-tools-list").replaceChildren(...MCP_TOOLS.map((key) =>
+      el("li", {},
+        el("strong", { text: t(`mcp.tool.${key}.name`) }),
+        el("span", { class: "muted", text: ` — ${t(`mcp.tool.${key}.desc`)}` }))));
+  }
+
   function wireStaticControls() {
     $("btn-image").addEventListener("click", generateImages);
     $("btn-video").addEventListener("click", askForVideo);
     $("tab-create").addEventListener("click", () => switchView("create"));
     $("tab-avatar").addEventListener("click", () => switchView("avatar"));
     $("tab-history").addEventListener("click", () => switchView("history"));
+    $("tab-mcp").addEventListener("click", () => switchView("mcp"));
   }
 
   function switchView(which) {
     $("view-create").hidden = which !== "create";
     $("view-avatar").hidden = which !== "avatar";
     $("view-history").hidden = which !== "history";
+    $("view-mcp").hidden = which !== "mcp";
     $("tab-create").classList.toggle("is-active", which === "create");
     $("tab-avatar").classList.toggle("is-active", which === "avatar");
     $("tab-history").classList.toggle("is-active", which === "history");
+    $("tab-mcp").classList.toggle("is-active", which === "mcp");
     if (which === "history") loadHistory();
+    if (which === "mcp") renderMcpView();
   }
 
   // ------------------------------------------------------------- polling

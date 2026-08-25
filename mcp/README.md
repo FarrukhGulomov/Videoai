@@ -45,11 +45,17 @@ python3 webapp/server.py      # http://127.0.0.1:8000, leave this running
 The client launches `mcp/server.py` itself as a local subprocess and talks
 to it over stdin/stdout. Nothing to deploy.
 
-### Streamable HTTP — for ChatGPT (and any other remote MCP client)
+### Streamable HTTP — for ChatGPT, Claude Desktop's Connectors, and any other remote MCP client
 
 **ChatGPT's custom connectors only speak to a remote HTTPS endpoint** —
-they cannot launch a local subprocess the way Claude Desktop does, so
-stdio mode cannot serve ChatGPT no matter how it's configured. Run:
+they cannot launch a local subprocess the way stdio mode does, so this
+mode is required for ChatGPT no matter how it's configured. Claude
+Desktop can reach this project either way: stdio (above) if you're
+comfortable editing `claude_desktop_config.json` and have Python
+locally, **or** the same remote endpoint described here, added the same
+way ChatGPT is — Settings → Connectors → Add custom connector, pointed
+at the deployed URL with the `Authorization: Bearer <token>` header.
+Both clients are just different callers of the one endpoint below. Run:
 
 ```bash
 export VIDEO_FACTORY_URL=http://127.0.0.1:8000   # or wherever the webapp lives
@@ -79,9 +85,10 @@ gates a human clicking through a browser), this endpoint has no human in
 the loop at all — anyone who can reach it can spend real money through the
 webapp it's pointed at, immediately, with no confirmation step of any kind.
 The server prints a loud warning at startup if this is unset. Register the
-resulting URL + token in ChatGPT's connector settings (Settings → Connectors
-→ Add custom connector — check OpenAI's current docs for the exact steps,
-since that UI moves).
+resulting URL + token in ChatGPT's or Claude Desktop's connector settings
+(both currently: Settings → Connectors → Add custom connector — check
+OpenAI's/Anthropic's current docs for the exact steps and where the
+auth header is entered, since that UI moves on both sides).
 
 ## Setup
 
@@ -107,6 +114,13 @@ macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 Restart Claude Desktop. The tools appear with the `video_factory_` prefix.
 
+This is the *local* (stdio) route — it needs Python and this file on the
+same machine as Claude Desktop. Claude Desktop can also add this project
+as a *remote* connector instead, exactly like ChatGPT does (no local
+Python needed) — see "ChatGPT" below; the same URL/token works for
+either client, since both are just callers of the same Streamable HTTP
+endpoint.
+
 ### Claude Code
 
 ```bash
@@ -119,11 +133,13 @@ also add a *remote* server (the Streamable HTTP mode above) the same way
 any HTTP MCP server is added — point it at the deployed URL with the
 `Authorization: Bearer <MCP_HTTP_TOKEN>` header.
 
-### ChatGPT
+### ChatGPT (and Claude Desktop's Connectors)
 
 See "Streamable HTTP" above — deploy it first, then add the resulting
-HTTPS URL as a custom connector in ChatGPT's settings, with the
-`Authorization: Bearer <token>` header where the UI asks for one.
+HTTPS URL as a custom connector, with the `Authorization: Bearer <token>`
+header where the UI asks for one. This works the same way whether the
+custom connector is being added in ChatGPT's settings or in Claude
+Desktop's Settings → Connectors — both point at the identical endpoint.
 
 ### Other MCP clients
 
