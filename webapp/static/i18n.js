@@ -73,7 +73,7 @@ const I18N = {
     "avatar.empty.body": "Rasm va ovoz havolasini kiritib boshlang",
 
     "model.ltx23.name": "LTX-2.3",
-    "model.ltx23.note": "Eng arzon variant. Uzun, yagona kadrlar 20 soniyagacha.",
+    "model.ltx23.note": "Ishonchli, tejamkor variant.",
     "model.kling3.name": "Kling 3.0",
     "model.kling3.note": "Eng yaxshi umumiy harakat. Tavsiya etiladi.",
     "model.veo31.name": "Veo 3.1",
@@ -84,6 +84,10 @@ const I18N = {
     "model.flux3.note": "Black Forest Labs'ning eng yangi modeli. Tabiiy audio, 20 soniyagacha.",
     "model.seedance25.name": "Seedance 2.5",
     "model.seedance25.note": "Mavjud eng yuqori sifat. Faqat 16:9 kadrlar, sezilarli qimmatroq.",
+    "model.hailuo02.name": "Hailuo 02",
+    "model.hailuo02.note": "Barchasidan arzon variant.",
+    "model.pixverse6.name": "PixVerse 6",
+    "model.pixverse6.note": "Stilize ko'rinishlar: anime, 3D, komiks, kiberpank.",
 
     "step4.title": "Videongiz tayyor",
     "step4.subtitle": "Ko'ring, yuklab oling yoki yaxshilang",
@@ -230,7 +234,7 @@ const I18N = {
     "avatar.empty.body": "Начните со ссылки на фото и аудио",
 
     "model.ltx23.name": "LTX-2.3",
-    "model.ltx23.note": "Самый дешёвый вариант. Длинные одиночные кадры до 20 секунд.",
+    "model.ltx23.note": "Надёжный, экономичный вариант.",
     "model.kling3.name": "Kling 3.0",
     "model.kling3.note": "Лучшее движение в целом. Рекомендуется.",
     "model.veo31.name": "Veo 3.1",
@@ -241,6 +245,10 @@ const I18N = {
     "model.flux3.note": "Новейшая модель Black Forest Labs. Естественный звук, до 20 секунд.",
     "model.seedance25.name": "Seedance 2.5",
     "model.seedance25.note": "Самое высокое доступное качество. Только кадры 16:9, значительно дороже.",
+    "model.hailuo02.name": "Hailuo 02",
+    "model.hailuo02.note": "Самый дешёвый вариант из всех.",
+    "model.pixverse6.name": "PixVerse 6",
+    "model.pixverse6.note": "Стилизованный вид: аниме, 3D, комикс, киберпанк.",
 
     "step4.title": "Ваше видео готово",
     "step4.subtitle": "Смотрите, скачивайте или улучшайте",
@@ -387,7 +395,7 @@ const I18N = {
     "avatar.empty.body": "Start with a photo and voice track link",
 
     "model.ltx23.name": "LTX-2.3",
-    "model.ltx23.note": "Cheapest option. Long single takes up to 20s.",
+    "model.ltx23.note": "Reliable, budget-friendly option.",
     "model.kling3.name": "Kling 3.0",
     "model.kling3.note": "Best all-round motion. Recommended default.",
     "model.veo31.name": "Veo 3.1",
@@ -398,6 +406,10 @@ const I18N = {
     "model.flux3.note": "Black Forest Labs' newest model. Native audio, up to 20s.",
     "model.seedance25.name": "Seedance 2.5",
     "model.seedance25.note": "Highest quality available. 16:9 shots only, significantly pricier.",
+    "model.hailuo02.name": "Hailuo 02",
+    "model.hailuo02.note": "Cheapest option of all.",
+    "model.pixverse6.name": "PixVerse 6",
+    "model.pixverse6.note": "Stylized looks: anime, 3D, comic, cyberpunk.",
 
     "step4.title": "Your video is ready",
     "step4.subtitle": "Watch it, download it, or make it better",

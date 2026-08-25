@@ -801,9 +801,17 @@ class Handler(BaseHTTPRequestHandler):
         rates = CONFIG["rates"]["final_take_per_second_usd_by_model"]
         models = [
             {
+                "id": CONFIG["models"]["final_take_alt_hailuo"],
+                "name": "Hailuo 02",
+                "note": "Cheapest option of all.",
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_hailuo"]]),
+                "tier": "budget",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_hailuo"]),
+            },
+            {
                 "id": CONFIG["models"]["final_take_alt_ltx"],
                 "name": "LTX-2.3",
-                "note": "Cheapest option.",
+                "note": "Reliable, budget-friendly option.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_ltx"]]),
                 "tier": "budget",
                 "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_ltx"]),
@@ -824,6 +832,14 @@ class Handler(BaseHTTPRequestHandler):
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_veo"]]),
                 "tier": "standard",
                 "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_veo"]),
+            },
+            {
+                "id": CONFIG["models"]["final_take_alt_pixverse"],
+                "name": "PixVerse 6",
+                "note": "Stylized looks: anime, 3D, comic, cyberpunk.",
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_pixverse"]]),
+                "tier": "standard",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_pixverse"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance"],

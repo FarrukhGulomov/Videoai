@@ -334,6 +334,8 @@
     "bytedance/seedance-2.0/image-to-video": "seedance20",
     "blackforestlabs/flux-3/image-to-video": "flux3",
     "bytedance/seedance-2.5/image-to-video": "seedance25",
+    "fal-ai/minimax/hailuo-02/standard/image-to-video": "hailuo02",
+    "fal-ai/pixverse/v6/image-to-video": "pixverse6",
   };
 
   function modelLabel(model) {
