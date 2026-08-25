@@ -746,6 +746,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, job)
             if path.startswith("/media/"):
                 return self._serve_media(path[len("/media/"):])
+            if path == "/mcp/server.py":
+                return self._serve_mcp_server_file()
             return self._serve_static(path)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
@@ -801,9 +803,17 @@ class Handler(BaseHTTPRequestHandler):
         rates = CONFIG["rates"]["final_take_per_second_usd_by_model"]
         models = [
             {
+                "id": CONFIG["models"]["final_take_alt_hailuo"],
+                "name": "Hailuo 02",
+                "note": "Cheapest option of all.",
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_hailuo"]]),
+                "tier": "budget",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_hailuo"]),
+            },
+            {
                 "id": CONFIG["models"]["final_take_alt_ltx"],
                 "name": "LTX-2.3",
-                "note": "Cheapest option.",
+                "note": "Reliable, budget-friendly option.",
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_ltx"]]),
                 "tier": "budget",
                 "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_ltx"]),
@@ -824,6 +834,14 @@ class Handler(BaseHTTPRequestHandler):
                 "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_veo"]]),
                 "tier": "standard",
                 "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_veo"]),
+            },
+            {
+                "id": CONFIG["models"]["final_take_alt_pixverse"],
+                "name": "PixVerse 6",
+                "note": "Stylized looks: anime, 3D, comic, cyberpunk.",
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_pixverse"]]),
+                "tier": "standard",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_pixverse"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance"],
@@ -867,6 +885,14 @@ class Handler(BaseHTTPRequestHandler):
             "avatar": {
                 "rate": _retail_rate(CONFIG["rates"]["avatar_per_second_usd"]),
                 "resolutions": ["720p", "1080p"],
+            },
+            "mcp": {
+                # MCP_PUBLIC_URL is set by the operator only after deploying
+                # mcp/server.py's Streamable HTTP mode as its own public
+                # service (see mcp/README.md) -- empty until then, which the
+                # /mcp instructions tab uses to show "not yet available"
+                # instead of a URL nobody can actually reach.
+                "http_url": os.environ.get("MCP_PUBLIC_URL", "").rstrip("/"),
             },
         }
 
@@ -1245,6 +1271,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "Not found."})
         ctype = mimetypes.guess_type(target.name)[0] or "text/plain"
         self._send(200, target.read_bytes(), ctype=ctype)
+
+    def _serve_mcp_server_file(self):
+        """Lets a user download the actual mcp/server.py this deployment
+        runs, straight from the /mcp instructions tab, without needing the
+        whole repo -- it's a single stdlib-only file (see mcp/README.md).
+        Fixed path, no user input in it, so no traversal risk."""
+        target = ROOT / "mcp" / "server.py"
+        if not target.is_file():
+            return self._send(404, {"error": "Not found."})
+        self._send(200, target.read_bytes(), ctype="text/x-python; charset=utf-8")
 
 
 def main():

@@ -332,6 +332,8 @@ FINAL_TAKE_DURATIONS = {
     "fal-ai/ltx-2.3/image-to-video": [6, 8, 10],                     # fal enum: 6, 8, 10 only (Pro)
     "blackforestlabs/flux-3/image-to-video": [5, 10, 15, 20],        # fal enum: auto, 5-20
     "bytedance/seedance-2.5/image-to-video": [5, 10, 15, 20, 30],    # fal enum: auto, 4-30
+    "fal-ai/minimax/hailuo-02/standard/image-to-video": [6, 10],     # fal enum: 6, 10 only
+    "fal-ai/pixverse/v6/image-to-video": [5, 10, 15],                # fal range: 1-15, integer
 }
 DEFAULT_DURATION_OPTIONS = [4, 6, 8]
 
@@ -345,9 +347,9 @@ def duration_options_for_model(model):
 
 
 def build_video_payload(model, prompt, start_frame, seconds, resolution, negative_prompt, audio, cfg, end_frame=None, shots=None):
-    """Veo, Kling, Seedance, FLUX, and LTX each take a differently-shaped payload. Branch on model family."""
-    if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx")):
-        die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance/LTX")
+    """Veo, Kling, Seedance, FLUX, LTX, Hailuo, and PixVerse each take a differently-shaped payload. Branch on model family."""
+    if end_frame and not any(fam in model for fam in ("kling", "seedance", "ltx", "hailuo")):
+        die(f"model '{model}' has no documented end-frame support on fal -- drop --end-frame or switch to Kling/Seedance/LTX/Hailuo")
     if shots and "kling" not in model:
         die(f"model '{model}' has no documented multi-shot support on fal -- multi_prompt is Kling-v3-only, drop --shots-json or switch to Kling")
 
@@ -415,6 +417,38 @@ def build_video_payload(model, prompt, start_frame, seconds, resolution, negativ
         }
         if negative_prompt:
             payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
+    elif "hailuo" in model:
+        # MiniMax Hailuo-02 standard: config.json's rate is pinned to its
+        # 768P tier (confirmed on fal's own /api docs), so resolution is
+        # hardcoded here rather than passed through -- sending a different
+        # tier would silently mismatch what's being charged. No
+        # negative_prompt or audio-toggle field in its schema; end_image_url
+        # is supported (already in the end-frame allow-list above).
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": seconds,
+            "resolution": "768P",
+        }
+        if end_url:
+            payload["end_image_url"] = end_url
+        if negative_prompt:
+            payload["prompt"] = f"{prompt}\nAvoid: {negative_prompt}"
+    elif "pixverse" in model:
+        # PixVerse v6: real pricing varies by BOTH resolution and an
+        # audio on/off switch (config.json's rate assumes 720p + audio
+        # on) -- both hardcoded here rather than passed through, same
+        # reasoning as Hailuo's resolution above. No end_image_url on
+        # this endpoint (that's a separate PixVerse transition model).
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "duration": seconds,
+            "resolution": "720p",
+            "generate_audio_switch": True,
+        }
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
     else:
         payload = {
             "prompt": prompt,

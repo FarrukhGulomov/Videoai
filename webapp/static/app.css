@@ -486,6 +486,57 @@ a.dl:hover { text-decoration: underline; }
 }
 .toast.err { border-color: var(--err); color: var(--err); }
 
+/* ---------- MCP / API instructions ---------- */
+
+.code-block {
+  position: relative;
+  margin: 10px 0 4px;
+}
+.code-pre {
+  margin: 0;
+  padding: 16px 90px 16px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.code-pre code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+  color: var(--text);
+}
+.code-copy {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 6px 12px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.code-copy:hover { background: var(--accent-wash); border-color: var(--accent); }
+
+.mcp-tools-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 9px;
+}
+.mcp-tools-list li {
+  padding: 10px 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 640px) {
