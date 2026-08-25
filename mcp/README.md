@@ -71,11 +71,13 @@ on its own. To make it reachable from ChatGPT, put a public HTTPS URL in
 front of it, exactly like the webapp:
 
 - **Easiest: deploy it as a second Railway service** alongside the webapp
-  (see the repo root's `DEPLOY.md`) — same `Dockerfile` build, just override
-  the start command to `python3 mcp/server.py --http` (Railway injects
-  `PORT`, which this reads the same way the webapp does) and set
-  `VIDEO_FACTORY_URL` to the webapp service's internal URL plus
-  `MCP_HTTP_TOKEN`.
+  — see the repo root's `DEPLOY.md` §7 for the exact step-by-step
+  (same `Dockerfile` build, just override the start command to
+  `python3 mcp/server.py --http`; Railway injects `PORT`, which this
+  reads the same way the webapp does). That section also covers setting
+  `MCP_PUBLIC_URL` on the *webapp* service afterward, which is what
+  makes the in-app "MCP" tab display this URL to users instead of
+  "not deployed yet."
 - Or run it behind any reverse proxy that terminates TLS (Caddy/nginx —
   see `DEPLOY.md` §5), pointed at `127.0.0.1:8300`.
 

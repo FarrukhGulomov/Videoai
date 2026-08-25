@@ -161,7 +161,71 @@ with a 1-image count) to confirm the deployed server can actually reach
 fal.ai — a firewall or egress rule blocking outbound HTTPS is the most
 common deployment-specific failure mode this checklist can't catch for you.
 
-## 7. What's already handled, what isn't
+## 7. Deploy the MCP remote endpoint (optional — needed for browser connectors)
+
+The webapp itself is already done at this point. This section is a
+*second, separate* deployment that lets Claude (claude.ai in a browser,
+or Claude Desktop's Settings → Connectors) and ChatGPT connect as a
+remote custom connector — the in-app "MCP" tab shows this URL to users
+once it exists, and shows "not deployed yet" until it does (see
+`mcp/README.md`'s "Streamable HTTP" section for the full protocol
+background). Skip this section entirely if only the local
+Claude Desktop/Claude Code (stdio) setup matters for now.
+
+1. **New Service** in the same Railway project as the webapp (Railway
+   project page → **+ New → GitHub Repo**, same repo, same branch). This
+   reuses the same `Dockerfile`/`railway.json`, so nothing to change there.
+2. **Settings → Deploy → Custom Start Command**, override it to:
+   ```
+   python3 mcp/server.py --http
+   ```
+   (No port argument — like the webapp, it reads Railway's injected
+   `PORT` automatically.)
+3. **Variables tab** on this *new* service — add:
+   - `VIDEO_FACTORY_URL` = the webapp service's URL. Prefer Railway's
+     private networking address (Settings → Networking on the webapp
+     service shows it, something like `http://videofactory.railway.internal:8000`)
+     over the public `*.up.railway.app` one — it's faster and doesn't
+     leave the two services' traffic on the public internet.
+   - `MCP_HTTP_TOKEN` = a long random secret **you generate yourself**
+     (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`)
+     — never reuse a value suggested to you in chat or anywhere it could
+     have been logged. Treat it like a password: every caller (Claude,
+     ChatGPT) must send it back as `Authorization: Bearer <token>`, and
+     anyone who has it can spend real money through the webapp
+     immediately, with no confirmation step. Store it in a password
+     manager, not just in Railway's UI.
+4. **Settings → Networking → Generate Domain** on this new service to
+   get its own public `*.up.railway.app` URL (separate from the
+   webapp's).
+5. Deploy, then confirm it's actually enforcing the token:
+   ```bash
+   curl -s -X POST https://<mcp-service>.up.railway.app/ \
+     -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+   # expect: 401 (no Authorization header sent)
+   curl -s -X POST https://<mcp-service>.up.railway.app/ \
+     -H 'Content-Type: application/json' \
+     -H "Authorization: Bearer <the MCP_HTTP_TOKEN you set>" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+   # expect: 200 with a JSON-RPC result
+   ```
+6. **Back on the webapp service's own Variables tab**, add:
+   - `MCP_PUBLIC_URL` = `https://<mcp-service>.up.railway.app` (the new
+     service's URL from step 4, no trailing slash). This is the one
+     variable that makes the in-app "MCP" tab actually display the
+     address instead of "not deployed yet" — it does nothing on its
+     own until this is set.
+   - The webapp redeploys automatically when a variable changes; reload
+     the "MCP" tab afterward to confirm the address now appears.
+
+The `MCP_HTTP_TOKEN` value itself is never shown anywhere in the UI —
+by design, since anyone with it can spend money unattended (see
+`mcp/README.md`'s "The money gate, one more time"). Give it out of
+band, to people you trust with that, the same way you'd share any other
+production secret.
+
+## 8. What's already handled, what isn't
 
 Handled by the codebase itself, not something you need to configure:
 
