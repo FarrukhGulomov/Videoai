@@ -529,11 +529,12 @@
     if (httpUrl) {
       setPanel($("mcp-chatgpt-block"),
         el("div", {},
+          el("p", { class: "muted small", text: t("mcp.chatgpt.pasteThis") }),
           codeBlock(`${httpUrl}\nAuthorization: Bearer <your-token>`),
           el("p", { class: "muted small", text: t("mcp.chatgpt.tokenNote") })));
     } else {
       setPanel($("mcp-chatgpt-block"),
-        el("p", { class: "muted small", text: t("mcp.chatgpt.notDeployed") }));
+        el("p", { class: "muted small err", text: t("mcp.chatgpt.notDeployed") }));
     }
 
     $("mcp-tools-list").replaceChildren(...MCP_TOOLS.map((key) =>
