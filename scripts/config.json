@@ -1,6 +1,11 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
+  "pricing": {
+    "customer_markup_multiplier": 2.5,
+    "_note": "Applied ONLY in webapp/server.py, to every customer-facing price: quotes, the confirm dialog, credit-balance charges, and (since mcp/server.py talks to the webapp's own API rather than reading this file) MCP tool output too. scripts/factory.py's CLI always shows the real wholesale fal.ai rate unchanged -- it's the operator's own tool against their own fal.ai balance, not a customer-facing surface, so there's nothing to mark up there. work/generations.jsonl (the internal spend ledger) always logs both numbers -- cost_usd stays the real wholesale spend (unchanged meaning from before this existed), customer_charged_usd is what was actually billed -- so margin is visible internally without touching this file. Change this one number to change profit margin; nothing else needs editing."
+  },
+
   "_model_choice_note": "Per-shot model routing lives in fal-master-prompt.md section 5. Short version: Kling 3.0 Standard is the default (cheapest proven option, matches this user's own Higgsfield clips, strong action/motion/lip-sync). LTX-2.3 for cost-sensitive or long single-take shots (verified cheapest at $0.06/s 1080p, up to 20s in one call, vertical-native -- untested on this project's actual likeness-holding yet, so not a blind default). Veo 3.1 for face-critical calm/dialogue close-ups. Seedance 2.0 for a hero shot with heavy physics/particle simulation that justifies its price. Seedance 2.5 and FLUX 3 are the two 'top quality, cost no object' options -- both meaningfully more expensive than everything else here, offered as an explicit opt-in tier for a user who has said price isn't the deciding factor, never chosen automatically. See each rate's own _note for the caveats that come with picking them.",
 
   "models": {
