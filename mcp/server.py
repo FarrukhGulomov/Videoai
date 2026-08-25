@@ -18,40 +18,75 @@ default, and the whole quote-then-approve safety gate already live in
 webapp/server.py (which itself reuses scripts/factory.py). Reimplementing
 any of that here would be a second copy of the same logic, exactly what
 this project has avoided everywhere else (the webapp reuses factory.py the
-same way).
+same way). It also means every price this server's tools quote is already
+the customer-facing (marked-up) price webapp/server.py computes -- this
+file never reads config.json or sees the wholesale fal.ai cost at all.
+
+Two transports, chosen at startup, sharing the exact same tool logic
+(TOOLS/HANDLERS/handle_message below have no transport-specific code):
+
+  stdio (default) -- for Claude Desktop/Code: the client launches this
+  script as a subprocess and speaks JSON-RPC over stdin/stdout. Nothing
+  to deploy; see mcp/README.md for the config JSON.
+
+  Streamable HTTP (--http / MCP_HTTP_PORT) -- for ChatGPT and any other
+  remote MCP client: ChatGPT's custom connectors only speak to a remote
+  HTTPS endpoint (Streamable HTTP or SSE), never to a local stdio
+  subprocess, so stdio mode cannot serve it no matter how it's
+  configured. This runs a small stdlib HTTP server instead, implementing
+  the minimal server side of the Streamable HTTP transport (POST a
+  JSON-RPC request, get a JSON-RPC response back -- no SSE stream, since
+  none of these tools need server-initiated pushes). Deploy it like the
+  webapp (e.g. a second Railway service) to get a public HTTPS URL.
 
 Run:
   python3 webapp/server.py &        # the webapp must already be running
-  python3 mcp/server.py             # this process, launched by your MCP client
+  python3 mcp/server.py             # stdio mode, launched by your MCP client
+  python3 mcp/server.py --http 8300 # Streamable HTTP mode, for ChatGPT etc.
 
 Configure via environment:
-  VIDEO_FACTORY_URL       webapp base URL, default http://127.0.0.1:8000
-  VIDEO_FACTORY_SESSION   optional -- a vf_session cookie value, only needed
-                          if the webapp is in multi-user mode (see
-                          mcp/README.md for how to obtain one; this is a
-                          stopgap until a real API-key mode exists)
+  VIDEO_FACTORY_URL         webapp base URL, default http://127.0.0.1:8000
+  VIDEO_FACTORY_SESSION     optional -- a vf_session cookie value, only
+                            needed if the webapp is in multi-user mode (see
+                            mcp/README.md for how to obtain one; this is a
+                            stopgap until a real API-key mode exists)
+  VIDEO_FACTORY_BASIC_AUTH  optional -- "user:pass", only needed if the
+                            webapp has WEBAPP_BASIC_AUTH_USER/PASS set
+                            (see webapp/README.md's "Access control")
+  MCP_HTTP_TOKEN            HTTP mode only -- a shared secret; every
+                            request must send it as "Authorization: Bearer
+                            <token>". Required once --http is used with a
+                            non-loopback host, since this endpoint being
+                            reachable at all means it can spend real money
+                            through the webapp it's pointed at.
 
-See mcp/README.md for the exact Claude Desktop / Claude Code config JSON.
+See mcp/README.md for the exact Claude Desktop / Claude Code / ChatGPT
+setup, including how to get a public HTTPS URL for the HTTP mode.
 """
 
+import base64
+import hmac
 import json
 import os
 import sys
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_URL = os.environ.get("VIDEO_FACTORY_URL", "http://127.0.0.1:8000").rstrip("/")
 SESSION_COOKIE = os.environ.get("VIDEO_FACTORY_SESSION", "").strip()
+BASIC_AUTH = os.environ.get("VIDEO_FACTORY_BASIC_AUTH", "").strip()
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "video-factory"
 SERVER_VERSION = "1.0.0"
 
 
 def log(msg):
-    """Stdout is reserved exclusively for JSON-RPC messages -- the MCP stdio
-    transport requires this. Anything else on stdout corrupts the stream
-    and silently breaks the client. All logging goes to stderr."""
+    """Stdout is reserved exclusively for JSON-RPC messages in stdio mode --
+    the MCP stdio transport requires this, so all logging goes to stderr
+    unconditionally (HTTP mode has no such constraint, but one log path
+    for both modes is simpler and costs HTTP mode nothing)."""
     print(msg, file=sys.stderr, flush=True)
 
 
@@ -63,6 +98,8 @@ def api(method, path, body=None, timeout=300):
     headers = {"Content-Type": "application/json"}
     if SESSION_COOKIE:
         headers["Cookie"] = f"vf_session={SESSION_COOKIE}"
+    if BASIC_AUTH:
+        headers["Authorization"] = "Basic " + base64.b64encode(BASIC_AUTH.encode()).decode()
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -94,6 +131,23 @@ def positive_int_arg(args, key, default):
     value = args.get(key)
     if value is None:
         return default
+    value = int(value)
+    if value <= 0:
+        raise RuntimeError(f"{key} must be a positive number, got {value}.")
+    return value
+
+
+def optional_positive_int(args, key):
+    """Like positive_int_arg, but with no fallback default -- for `seconds`,
+    where the "right" default now depends on which model is selected (each
+    has its own valid duration set; see video_factory_get_info). Omitting
+    `seconds` from the webapp request body entirely lets the webapp apply
+    ITS model-aware default rather than this file guessing one that might
+    not even be valid for the model in play. Returns None if omitted;
+    raises on an explicit non-positive value, same as positive_int_arg."""
+    value = args.get(key)
+    if value is None:
+        return None
     value = int(value)
     if value <= 0:
         raise RuntimeError(f"{key} must be a positive number, got {value}.")
@@ -159,8 +213,11 @@ def h_get_info(_args):
     for m in cfg["models"]:
         tag = " <- default" if m.get("default") else ""
         lock = f" [{m['aspect_ratio_lock']} shots only]" if m.get("aspect_ratio_lock") else ""
-        lines.append(f"  - {m['id']} [{m.get('tier', '?')}] \"{m['name']}\": ${m['rate']}/s — {m['note']}{lock}{tag}")
-    lines.append(f"Available durations (seconds): {cfg['durations']}")
+        durations = m.get("durations") or []
+        lines.append(
+            f"  - {m['id']} [{m.get('tier', '?')}] \"{m['name']}\": ${m['rate']}/s — {m['note']}{lock}{tag}\n"
+            f"      durations (seconds): {durations}"
+        )
     av = cfg.get("avatar")
     if av:
         lines.append("")
@@ -223,14 +280,16 @@ def h_create_images(args):
 
 
 def h_quote_video(args):
-    seconds = positive_int_arg(args, "seconds", 6)
-    body = {"seconds": seconds}
+    seconds = optional_positive_int(args, "seconds")
+    body = {}
+    if seconds is not None:
+        body["seconds"] = seconds
     model = (args.get("model") or "").strip()
     if model:
         body["model"] = model
     quote = api("POST", "/api/quote", body)
     return (f"{quote['shown_as']} using {quote['model']}. Call video_factory_create_video with "
-            f"approved_cost={quote['cost_usd']}, seconds={seconds}"
+            f"approved_cost={quote['cost_usd']}, seconds={quote['seconds']}"
             f"{f', model={model!r}' if model else ''} to proceed.")
 
 
@@ -242,7 +301,7 @@ def h_create_video(args):
             "video_factory_create_images and pass one of its URLs here. Video is always "
             "animated from a chosen image, never invented from text alone."
         )
-    seconds = positive_int_arg(args, "seconds", 6)
+    seconds = optional_positive_int(args, "seconds")
     approved = args.get("approved_cost")
     if approved is None:
         raise RuntimeError(
@@ -250,7 +309,9 @@ def h_create_video(args):
             "show the user that price, and only then pass its exact cost_usd here."
         )
     prompt = (args.get("motion") or "").strip() or "Camera holds steady, natural ambient motion."
-    body = {"prompt": prompt, "image_url": image_url, "seconds": seconds, "approved_cost": approved}
+    body = {"prompt": prompt, "image_url": image_url, "approved_cost": approved}
+    if seconds is not None:
+        body["seconds"] = seconds
     model = (args.get("model") or "").strip()
     if model:
         body["model"] = model
@@ -615,8 +676,8 @@ def handle_message(msg):
     return None  # unrecognized notification -- nothing to reply with
 
 
-def main():
-    log(f"Video Factory MCP server starting, backend at {BASE_URL}")
+def main_stdio():
+    log(f"Video Factory MCP server (stdio) starting, backend at {BASE_URL}")
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -633,6 +694,133 @@ def main():
             response = rpc_error(msg.get("id"), -32603, str(exc)) if msg.get("id") is not None else None
         if response is not None:
             print(json.dumps(response), flush=True)
+
+
+# ----------------------------------------------------------- HTTP transport
+#
+# The minimal server side of Streamable HTTP (MCP spec): a single POST
+# endpoint, no SSE stream -- verified against the spec's transport doc
+# rather than guessed, since getting the wire format wrong would make a
+# real client (ChatGPT, or Claude configured for a remote server) fail to
+# connect with no useful error. A request (has "id") gets a synchronous
+# 200 + application/json response with the JSON-RPC result; a notification
+# or a response-from-client (no "id") gets a bare 202. GET (the optional
+# server-initiated-message stream) returns 405 -- nothing here needs it,
+# every tool is a synchronous request/response.
+
+class MCPHTTPHandler(BaseHTTPRequestHandler):
+    server_version = "VideoFactoryMCP"
+
+    def log_message(self, fmt, *args):
+        log(f"  {self.command} {self.path} -> {args[1] if len(args) > 1 else ''}")
+
+    def _require_token(self):
+        """Returns True if the request may proceed. A no-op (always True)
+        only if MCP_HTTP_TOKEN is unset -- unlike the webapp's optional
+        WEBAPP_BASIC_AUTH, this is not "recommended", it is load-bearing:
+        this endpoint being reachable at all means whoever can reach it
+        can spend real money through the webapp it's pointed at, and
+        there is no browser confirmation click standing between an
+        autonomous caller and that spend the way there is for a human at
+        the webapp's UI."""
+        token = os.environ.get("MCP_HTTP_TOKEN", "").strip()
+        if not token:
+            return True
+        header = self.headers.get("Authorization", "")
+        given = header[7:] if header.startswith("Bearer ") else ""
+        if hmac.compare_digest(given, token):
+            return True
+        body = b'{"error":"Unauthorized. Send Authorization: Bearer <token>."}'
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+        return False
+
+    def do_POST(self):
+        if not self._require_token():
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        try:
+            msg = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            body = b'{"error":"Invalid JSON."}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
+            return
+
+        msg_id = msg.get("id")
+        try:
+            response = handle_message(msg)
+        except Exception as exc:  # noqa: BLE001 - never let a bad message kill the server
+            log(f"Error handling message: {exc}")
+            response = rpc_error(msg_id, -32603, str(exc)) if msg_id is not None else None
+
+        if msg_id is None:
+            # A notification, or a response the client sent us -- no reply
+            # expected either way.
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        body = json.dumps(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("MCP-Protocol-Version", PROTOCOL_VERSION)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
+
+    def do_GET(self):
+        self.send_response(405)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def main_http(port):
+    if not os.environ.get("MCP_HTTP_TOKEN", "").strip():
+        log(
+            "WARNING: MCP_HTTP_TOKEN is not set -- this HTTP endpoint has no access "
+            "control. Anyone who can reach it can spend real money through the webapp "
+            "it's pointed at. Set MCP_HTTP_TOKEN before exposing this beyond localhost."
+        )
+    log(f"Video Factory MCP server (Streamable HTTP) starting on :{port}, backend at {BASE_URL}")
+    server = ThreadingHTTPServer(("0.0.0.0", port), MCPHTTPHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log("stopped")
+
+
+def main():
+    args = sys.argv[1:]
+    http_requested = "--http" in args or bool(os.environ.get("MCP_HTTP_PORT", "").strip())
+    if not http_requested:
+        return main_stdio()
+
+    port = None
+    if "--http" in args:
+        idx = args.index("--http")
+        if idx + 1 < len(args) and args[idx + 1].isdigit():
+            port = int(args[idx + 1])
+    if port is None:
+        port = int(os.environ.get("MCP_HTTP_PORT") or os.environ.get("PORT") or 8300)
+    main_http(port)
 
 
 if __name__ == "__main__":

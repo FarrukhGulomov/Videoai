@@ -121,7 +121,6 @@
       return;
     }
     renderPresets();
-    renderDurationChips();
     renderTierChips();
     wireStaticControls();
     wireAuth();
@@ -138,7 +137,6 @@
     picker.addEventListener("change", () => {
       setLang(picker.value);
       renderPresets();
-      renderDurationChips();
       renderTierChips();
       renderAvatarResChips();
       renderAuthBar();
@@ -364,7 +362,14 @@
   function applyPreset(preset) {
     state.activePreset = preset.id;
     $("video-prompt").value = preset.motion;
-    if (preset.seconds) selectDuration(preset.seconds);
+    if (preset.seconds) {
+      // The preset's `seconds` is a suggested length, not guaranteed to be
+      // one of the currently-selected model's own valid options -- snap to
+      // whichever real option is closest rather than assuming it exists.
+      const info = selectedModelInfo();
+      const durations = (info && info.durations) || [preset.seconds];
+      selectDuration(nearestValidDuration(preset.seconds, durations));
+    }
     for (const btn of document.querySelectorAll("#presets .preset")) {
       btn.classList.toggle("is-active", btn.dataset.id === preset.id);
     }
@@ -373,21 +378,24 @@
 
   // --------------------------------------------------------- static wiring
 
-  const DURATION_LABEL_KEYS = ["step3.duration.short", "step3.duration.medium", "step3.duration.long"];
-
+  /* Durations are per-model (fal's own real constraint differs by model --
+     see scripts/factory.py's FINAL_TAKE_DURATIONS) -- rendered as actual
+     second counts (5s/10s/15s...) rather than vague Short/Medium/Long, so
+     a user making a 30s YouTube clip or a 5s Reel can pick exactly that. */
   function renderDurationChips() {
     if (!state.config) return;
-    const durations = state.config.durations;
+    const info = selectedModelInfo();
+    const durations = (info && info.durations) || [4, 6, 8];
     if (state.selectedSeconds === null || !durations.includes(state.selectedSeconds)) {
-      state.selectedSeconds = durations[Math.floor(durations.length / 2)];
+      state.selectedSeconds = durations[0];
     }
     const wrap = $("duration-chips");
-    wrap.replaceChildren(...durations.map((secs, i) =>
+    wrap.replaceChildren(...durations.map((secs) =>
       el("button", {
         class: "chip" + (secs === state.selectedSeconds ? " is-active" : ""),
         type: "button", "data-seconds": String(secs),
         onclick: () => selectDuration(secs),
-        text: t(DURATION_LABEL_KEYS[i] || DURATION_LABEL_KEYS[DURATION_LABEL_KEYS.length - 1]),
+        text: `${secs}s`,
       })));
   }
 
@@ -396,6 +404,11 @@
     for (const chip of document.querySelectorAll("#duration-chips .chip")) {
       chip.classList.toggle("is-active", Number(chip.dataset.seconds) === secs);
     }
+  }
+
+  function nearestValidDuration(target, options) {
+    return options.reduce((best, cur) =>
+      Math.abs(cur - target) < Math.abs(best - target) ? cur : best, options[0]);
   }
 
   // ----------------------------------------------------- model quality tier
@@ -445,6 +458,7 @@
         el("strong", { text: `${label.name} · $${m.rate}/s` }),
         el("span", { text: label.note }));
     }));
+    renderDurationChips();
   }
 
   function selectModel(id) {
@@ -452,6 +466,7 @@
     for (const card of document.querySelectorAll("#model-grid .preset")) {
       card.classList.toggle("is-active", card.dataset.id === id);
     }
+    renderDurationChips();
   }
 
   function selectedModelInfo() {

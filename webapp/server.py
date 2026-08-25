@@ -144,6 +144,20 @@ def _require_public_url(value, field_name, allow_data=False):
     return value
 
 
+def _retail_rate(wholesale_rate):
+    """Every dollar figure a customer sees -- quotes, the confirm dialog,
+    credit-balance charges, MCP tool text (mcp/server.py talks to this
+    API, never reads config.json directly, so it inherits this for free)
+    -- goes through this first. The real fal.ai wholesale rate from
+    config.json is never shown to a customer, only used internally (see
+    the wholesale_cost/customer_charged_usd split in each _run_*_job
+    below) so the operator can see real spend vs. what was actually
+    billed. scripts/factory.py's CLI is unaffected: it's the operator's
+    own tool against their own fal.ai balance, not customer-facing, so it
+    keeps showing wholesale numbers unchanged."""
+    return round(wholesale_rate * CONFIG["pricing"]["customer_markup_multiplier"], 6)
+
+
 def _require_seedance25_ratio(model, image_url):
     """Web-native mirror of factory.require_seedance25_ratio: Seedance
     2.5's rate in config.json is a 16:9-only approximation of fal's real
@@ -248,7 +262,6 @@ PRESETS = [
 ]
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3"]
-DURATIONS = [4, 6, 8]
 
 # Whitelist for the subtitles "style" param, which is embedded unquoted
 # inside an ffmpeg -vf filtergraph string (force_style='...'). A value
@@ -393,7 +406,7 @@ def friendly_error(exc):
     if "FAL_KEY is not set" in text or "FAL_KEY" in text and "not set" in text:
         return "No fal.ai API key is configured on the server. Set FAL_KEY and restart."
     if "422" in text and "duration" in text:
-        return "This model does not accept that duration. Pick 4, 6, or 8 seconds."
+        return "This model does not accept that duration. Try one of its listed length options."
     if "network error" in text or "timed out" in text:
         return "Could not reach fal.ai. Check the connection and try again."
     if "no rate on file" in text:
@@ -428,7 +441,7 @@ def _charge(job_id, charge_user_id, cost, note):
         return False
 
 
-def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
+def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id, cost):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         # `refs` are client-supplied and already validated as public
@@ -457,10 +470,10 @@ def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
         result = factory.fal_run(model, payload)
         urls = factory.all_urls(result, "images", "image")
 
-        cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
+        wholesale_cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 1, "model": model,
-            "prompt": prompt, "cost_usd": cost,
+            "prompt": prompt, "cost_usd": wholesale_cost, "customer_charged_usd": cost,
             "status": "success", "output_url": urls[0] if urls else None,
             "request_id": result.get("_request_id"),
         })
@@ -485,7 +498,7 @@ def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id):
         _persist(job)
 
 
-def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_image_url, charge_user_id):
+def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, cost, audio, end_image_url, charge_user_id):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         payload = factory.build_video_payload(
@@ -498,11 +511,11 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_i
         result = factory.fal_run(model, payload, max_wait=1800)
         url = factory.first_url(result, "video", "videos")
 
-        cost = round(rate * seconds, 4)
+        wholesale_cost = round(wholesale_rate * seconds, 4)
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 3, "model": model,
             "prompt": prompt, "start_frame_url": image_url,
-            "duration_seconds": seconds, "cost_usd": cost,
+            "duration_seconds": seconds, "cost_usd": wholesale_cost, "customer_charged_usd": cost,
             "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
@@ -524,7 +537,7 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, rate, audio, end_i
         _persist(job)
 
 
-def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id):
+def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost, charge_user_id):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     out_dir = WORK / "postprod"
     try:
@@ -579,7 +592,7 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
 
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": op, "model": model,
-            "cost_usd": cost, "status": "success",
+            "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success",
             "output_url": outputs[0] if outputs else None, "request_id": request_id,
         })
         deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} postprod {op}")
@@ -596,7 +609,7 @@ def _run_postprod_job(job_id, op, file_url, params, model, cost, charge_user_id)
         _persist(job)
 
 
-def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, cost, charge_user_id):
+def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost, charge_user_id):
     """Turns a photo + voice track into a talking-head video (OmniHuman).
     `cost` is computed once up front (by _generate_avatar, from the audio's
     real probed duration) and threaded through unchanged -- not
@@ -618,7 +631,7 @@ def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, cos
 
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "avatar", "model": model,
-            "cost_usd": cost, "status": "success", "output_url": url,
+            "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
         deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} avatar")
@@ -790,64 +803,69 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "id": CONFIG["models"]["final_take_alt_ltx"],
                 "name": "LTX-2.3",
-                "note": "Cheapest option. Long single takes up to 20s.",
-                "rate": rates[CONFIG["models"]["final_take_alt_ltx"]],
+                "note": "Cheapest option.",
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_ltx"]]),
                 "tier": "budget",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_ltx"]),
             },
             {
                 "id": CONFIG["models"]["final_take"],
                 "name": "Kling 3.0",
                 "note": "Best all-round motion. Recommended default.",
-                "rate": rates[CONFIG["models"]["final_take"]],
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take"]]),
                 "tier": "standard",
                 "default": True,
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_veo"],
                 "name": "Veo 3.1",
                 "note": "Strongest face fidelity for close-ups.",
-                "rate": rates[CONFIG["models"]["final_take_alt_veo"]],
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_veo"]]),
                 "tier": "standard",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_veo"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance"],
                 "name": "Seedance 2.0",
                 "note": "Best physics and camera precision.",
-                "rate": rates[CONFIG["models"]["final_take_alt_seedance"]],
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_seedance"]]),
                 "tier": "premium",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_seedance"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_flux3"],
                 "name": "FLUX 3",
                 "note": "Black Forest Labs' newest model. Native audio, up to 20s.",
-                "rate": rates[CONFIG["models"]["final_take_alt_flux3"]],
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_flux3"]]),
                 "tier": "premium",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_flux3"]),
             },
             {
                 "id": CONFIG["models"]["final_take_alt_seedance25"],
                 "name": "Seedance 2.5",
                 "note": "Highest quality available. 16:9 shots only, significantly pricier.",
-                "rate": rates[CONFIG["models"]["final_take_alt_seedance25"]],
+                "rate": _retail_rate(rates[CONFIG["models"]["final_take_alt_seedance25"]]),
                 "tier": "premium",
                 "aspect_ratio_lock": "16:9",
+                "durations": factory.duration_options_for_model(CONFIG["models"]["final_take_alt_seedance25"]),
             },
         ]
-        upscale_tiers = {k: v for k, v in CONFIG["rates"]["upscale_per_second_usd_by_tier"].items()
+        upscale_tiers = {k: _retail_rate(v) for k, v in CONFIG["rates"]["upscale_per_second_usd_by_tier"].items()
                          if not k.startswith("_")}
         return {
             "models": models,
             "presets": PRESETS,
             "aspect_ratios": ASPECT_RATIOS,
-            "durations": DURATIONS,
-            "image_cost": CONFIG["rates"]["still_per_image_usd"],
+            "image_cost": _retail_rate(CONFIG["rates"]["still_per_image_usd"]),
             "postprod": {
                 "upscale_tiers": upscale_tiers,
-                "lipsync_rate": CONFIG["rates"]["lipsync_per_second_usd"],
-                "subtitles_rate": CONFIG["rates"]["transcription_per_second_usd"],
-                "bgremove_rate": CONFIG["rates"]["bg_remove_per_second_usd"],
+                "lipsync_rate": _retail_rate(CONFIG["rates"]["lipsync_per_second_usd"]),
+                "subtitles_rate": _retail_rate(CONFIG["rates"]["transcription_per_second_usd"]),
+                "bgremove_rate": _retail_rate(CONFIG["rates"]["bg_remove_per_second_usd"]),
             },
             "avatar": {
-                "rate": CONFIG["rates"]["avatar_per_second_usd"],
+                "rate": _retail_rate(CONFIG["rates"]["avatar_per_second_usd"]),
                 "resolutions": ["720p", "1080p"],
             },
         }
@@ -964,12 +982,14 @@ class Handler(BaseHTTPRequestHandler):
         """Price a paid call without spending anything — the web equivalent
         of `factory.py cost`."""
         model = body.get("model") or CONFIG["models"]["final_take"]
-        seconds = int(body.get("seconds") or 6)
-        if seconds not in DURATIONS:
-            raise ValueError(f"Duration must be one of {DURATIONS} seconds.")
-        rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
-        if rate is None:
+        valid_durations = factory.duration_options_for_model(model)
+        seconds = int(body.get("seconds") or valid_durations[0])
+        if seconds not in valid_durations:
+            raise ValueError(f"This model supports these durations: {valid_durations} seconds.")
+        wholesale_rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
+        if wholesale_rate is None:
             raise ValueError("That model has no price on file, so it cannot be run.")
+        rate = _retail_rate(wholesale_rate)
         cost = round(rate * seconds, 4)
         return self._send(200, {
             "model": model, "seconds": seconds, "rate": rate, "cost_usd": cost,
@@ -1017,7 +1037,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Unsupported aspect ratio.")
         refs = [_require_public_url(r, "Reference image", allow_data=True) for r in (body.get("refs") or [])]
 
-        cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
+        rate = _retail_rate(CONFIG["rates"]["still_per_image_usd"])
+        cost = round(rate * count, 4)
         approved = body.get("approved_cost")
         if approved is not None and abs(float(approved) - cost) > 0.005:
             raise ValueError(
@@ -1032,7 +1053,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         threading.Thread(
             target=_run_image_job,
-            args=(job["id"], prompt, count, aspect, refs, charge_user_id),
+            args=(job["id"], prompt, count, aspect, refs, charge_user_id, cost),
             daemon=True,
         ).start()
         return self._send(202, job)
@@ -1050,16 +1071,19 @@ class Handler(BaseHTTPRequestHandler):
         if end_image_url:
             end_image_url = _require_public_url(end_image_url, "End frame image", allow_data=True)
 
-        seconds = int(body.get("seconds") or 6)
-        if seconds not in DURATIONS:
-            raise ValueError(f"Duration must be one of {DURATIONS} seconds.")
-
         model = body.get("model") or CONFIG["models"]["final_take"]
-        rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
-        if rate is None:
+        wholesale_rate = CONFIG["rates"]["final_take_per_second_usd_by_model"].get(model)
+        if wholesale_rate is None:
             raise ValueError("That model has no price on file, so it cannot be run.")
+
+        valid_durations = factory.duration_options_for_model(model)
+        seconds = int(body.get("seconds") or valid_durations[0])
+        if seconds not in valid_durations:
+            raise ValueError(f"This model supports these durations: {valid_durations} seconds.")
+
         _require_seedance25_ratio(model, image_url)
 
+        rate = _retail_rate(wholesale_rate)
         cost = round(rate * seconds, 4)
         approved = body.get("approved_cost")
         if approved is None:
@@ -1078,7 +1102,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         threading.Thread(
             target=_run_video_job,
-            args=(job["id"], prompt, image_url, seconds, model, rate,
+            args=(job["id"], prompt, image_url, seconds, model, wholesale_rate, cost,
                   bool(body.get("audio", CONFIG["defaults"]["final_audio"])),
                   end_image_url, charge_user_id),
             daemon=True,
@@ -1090,11 +1114,12 @@ class Handler(BaseHTTPRequestHandler):
     def _quote_postprod(self, body):
         op = body.get("op")
         file_url = _require_public_url(body.get("file_url"), "Video file")
-        model, rate = _postprod_rate(op, body)
+        model, wholesale_rate = _postprod_rate(op, body)
         try:
             duration = factory.probe_duration(file_url)
         except SystemExit:
             raise ValueError("Could not read that file's duration — is the URL still reachable?") from None
+        rate = _retail_rate(wholesale_rate)
         cost = round(rate * duration, 4)
         return self._send(200, {
             "op": op, "model": model, "duration_seconds": round(duration, 2),
@@ -1108,12 +1133,14 @@ class Handler(BaseHTTPRequestHandler):
         cost this endpoint just quoted, or nothing runs."""
         op = body.get("op")
         file_url = _require_public_url(body.get("file_url"), "Video file")
-        model, rate = _postprod_rate(op, body)
+        model, wholesale_rate = _postprod_rate(op, body)
         try:
             duration = factory.probe_duration(file_url)
         except SystemExit:
             raise ValueError("Could not read that file's duration — is the URL still reachable?") from None
+        rate = _retail_rate(wholesale_rate)
         cost = round(rate * duration, 4)
+        wholesale_cost = round(wholesale_rate * duration, 4)
 
         if op == "subtitles":
             style = body.get("style") or CONFIG["defaults"]["subtitles"]["force_style"]
@@ -1135,7 +1162,7 @@ class Handler(BaseHTTPRequestHandler):
                        duration_seconds=round(duration, 2))
         threading.Thread(
             target=_run_postprod_job,
-            args=(job["id"], op, file_url, body, model, cost, charge_user_id),
+            args=(job["id"], op, file_url, body, model, wholesale_cost, cost, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
@@ -1147,7 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
         Priced off the voice track's own probed length, same as lipsync."""
         image_url = _require_public_url(body.get("image_url"), "Photo")
         audio_url = _require_public_url(body.get("audio_url"), "Voice track")
-        rate = CONFIG["rates"]["avatar_per_second_usd"]
+        rate = _retail_rate(CONFIG["rates"]["avatar_per_second_usd"])
         try:
             duration = factory.probe_duration(audio_url)
         except SystemExit:
@@ -1167,12 +1194,14 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Resolution must be 720p or 1080p.")
         turbo = bool(body.get("turbo"))
 
-        rate = CONFIG["rates"]["avatar_per_second_usd"]
+        wholesale_rate = CONFIG["rates"]["avatar_per_second_usd"]
         try:
             duration = factory.probe_duration(audio_url)
         except SystemExit:
             raise ValueError("Could not read that audio file's duration — is the URL still reachable?") from None
+        rate = _retail_rate(wholesale_rate)
         cost = round(rate * duration, 4)
+        wholesale_cost = round(wholesale_rate * duration, 4)
 
         approved = body.get("approved_cost")
         if approved is None:
@@ -1188,7 +1217,7 @@ class Handler(BaseHTTPRequestHandler):
         job = _new_job("avatar", owner, cost_usd=cost, duration_seconds=round(duration, 2))
         threading.Thread(
             target=_run_avatar_job,
-            args=(job["id"], image_url, audio_url, prompt, resolution, turbo, cost, charge_user_id),
+            args=(job["id"], image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost, charge_user_id),
             daemon=True,
         ).start()
         return self._send(202, job)
