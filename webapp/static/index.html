@@ -285,9 +285,12 @@
 
 <!-- Sign in / create account -->
 <div id="auth-modal" class="modal-backdrop" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+  <div class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-modal-icon" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M6 11V8a6 6 0 1 1 12 0v3" stroke="white" stroke-width="2" stroke-linecap="round"/><rect x="4" y="11" width="16" height="10" rx="3" fill="white"/></svg>
+    </div>
     <h3 id="auth-title" data-i18n="auth.title.signin">Kirish</h3>
-    <p class="muted small" data-i18n="auth.subtitle">Video yaratish uchun hisobingiz kerak.</p>
+    <p class="muted small" data-i18n="auth.subtitle">Rasm yoki video yaratish uchun hisobingizga kiring.</p>
 
     <button id="auth-google" class="btn google big" type="button" hidden>
       <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path fill="#4285F4" d="M19.6 10.23c0-.68-.06-1.36-.18-2H10v3.79h5.38a4.6 4.6 0 0 1-2 3.02v2.5h3.23c1.9-1.75 2.99-4.33 2.99-7.31Z"/><path fill="#34A853" d="M10 20c2.7 0 4.96-.89 6.62-2.42l-3.23-2.5c-.9.6-2.06.95-3.39.95-2.6 0-4.8-1.76-5.59-4.12H1.06v2.59A10 10 0 0 0 10 20Z"/><path fill="#FBBC05" d="M4.41 11.9a5.99 5.99 0 0 1 0-3.8V5.5H1.06a10 10 0 0 0 0 9l3.35-2.6Z"/><path fill="#EA4335" d="M10 3.98c1.47 0 2.79.5 3.83 1.5l2.87-2.87A9.96 9.96 0 0 0 10 0 10 10 0 0 0 1.06 5.5l3.35 2.6C5.2 5.75 7.4 3.98 10 3.98Z"/></svg>
@@ -297,17 +300,21 @@
 
     <label class="field">
       <span class="label" data-i18n="auth.email">Email</span>
-      <input id="auth-email" type="email" autocomplete="email" class="big-input">
+      <input id="auth-email" type="email" autocomplete="email" class="big-input" placeholder="siz@misol.com">
     </label>
     <label class="field">
       <span class="label" data-i18n="auth.password">Parol</span>
-      <input id="auth-password" type="password" autocomplete="current-password" class="big-input">
+      <div class="password-wrap">
+        <input id="auth-password" type="password" autocomplete="current-password" class="big-input">
+        <button type="button" id="auth-password-toggle" class="password-toggle" aria-label="Show password">👁</button>
+      </div>
     </label>
     <p id="auth-error" class="muted small err" hidden></p>
     <div class="modal-actions">
       <button id="auth-toggle" class="btn ghost" type="button" data-i18n="auth.needAccount">Hisobingiz yo'qmi? Ro'yxatdan o'ting</button>
       <button id="auth-submit" class="btn primary big" type="button" data-i18n="auth.signin">Kirish</button>
     </div>
+    <p class="auth-modal-footnote muted small" data-i18n="auth.footnote">Ma'lumotlaringiz shifrlangan holda saqlanadi.</p>
   </div>
 </div>
 

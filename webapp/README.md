@@ -15,10 +15,18 @@ No install step, no dependencies — stdlib only, same constraint as the CLI.
 
 ### Access control (recommended before exposing this on a real server)
 
-Single-tenant mode (the default — no `SUPABASE_*` set) has no login at all;
-anyone who can reach the port can generate against your `FAL_KEY` and read
-your job history. Set both of these to require HTTP Basic Auth on every
-request:
+**Generating anything now always requires a signed-in user** — see "Multi-user
+mode" below. There is no single-tenant bypass any more: `_require_funded_user()`
+in `webapp/server.py` is the one gate every paid endpoint (image, video,
+post-production, avatar) calls through, and it rejects an unauthenticated
+request unconditionally, whether it came from the browser UI or from the MCP
+server (itself just another caller of this same HTTP API). Leaving
+`SUPABASE_*` unset means nobody can generate at all, not that generation is
+open to anyone — set it up before expecting this to actually work.
+
+Reading the page and job history is still unauthenticated by default in
+that case, so putting a real access gate in front is still worth doing.
+Set both of these to require HTTP Basic Auth on every request:
 
 ```bash
 export WEBAPP_BASIC_AUTH_USER=admin
@@ -148,6 +156,34 @@ the server quoted.
 
 ## Security notes
 
+- **Every paid endpoint requires a signed-in user, unconditionally.**
+  `_require_funded_user()` in `webapp/server.py` is the single gate image,
+  video, post-production, and avatar generation all call through, and it
+  now rejects a request with no verified session no matter what mode the
+  deployment is in — there is no single-tenant/LOCAL_OWNER bypass for
+  spending money any more. This also covers the MCP server (`mcp/server.py`),
+  since it's just another HTTP caller of this same API.
+- **Security headers on every response.** `SECURITY_HEADERS` in
+  `webapp/server.py` is sent from the one `_send()` method every response
+  (static files, JSON, media) goes through: a strict `Content-Security-Policy`
+  (`script-src`/`style-src` limited to `'self'`, no inline scripts or styles
+  anywhere in `webapp/static/`), `X-Frame-Options: DENY` and
+  `frame-ancestors 'none'` (clickjacking), `Referrer-Policy`,
+  `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and
+  `Strict-Transport-Security` (a no-op over plain HTTP, so safe for local
+  dev — only takes effect once served over real TLS).
+- **The session cookie gets the `Secure` flag automatically over HTTPS.**
+  `_is_https()` checks `X-Forwarded-Proto` (set by Railway's own proxy, or
+  any real TLS-terminating proxy per DEPLOY.md §5) and adds `Secure` to
+  `Set-Cookie` when true — no manual step needed once this is behind real
+  TLS, unlike before.
+- **Login and signup are rate-limited** (`_check_auth_rate_limit()`): 8
+  attempts per 5 minutes per IP (from `X-Forwarded-For` when present, the
+  raw socket address otherwise), a simple in-memory sliding window aimed at
+  credential stuffing / brute force against one deployment. Resets on
+  restart — deliberately not persisted, since this process is the only
+  server instance (`ThreadingHTTPServer`).
+- **Passwords must be at least 8 characters** (`_auth_signup`), up from 6.
 - `FAL_KEY` and `SUPABASE_SERVICE_ROLE_KEY` are read server-side from the
   environment and never appear in any response. Verified: no endpoint echoes
   them. `SUPABASE_URL` and `SUPABASE_ANON_KEY` **do** appear in
@@ -161,10 +197,9 @@ the server quoted.
   cannot inject markup.
 - The session cookie (`vf_session`, holding the Supabase access token) is
   `HttpOnly` and `SameSite=Lax` so page script can't read it and it isn't
-  sent cross-site. It is **not** marked `Secure`, because this is still a
-  local-first tool typically served over plain HTTP — add `Secure` (and put
-  a real TLS-terminating proxy in front) before exposing multi-user mode on
-  the public internet.
+  sent cross-site, plus `Secure` automatically whenever the request arrived
+  over HTTPS (see `_is_https()` above) — no manual step needed behind a
+  real TLS-terminating proxy (DEPLOY.md §5) or Railway's own domain.
 - `credits` and `credit_ledger` carry no client-writable RLS policy at all
   (see `02-multiuser-schema.sql`) — the only way to move a balance is
   `supabase_client.record_spend()` using the service role key, called
@@ -226,9 +261,13 @@ an MVP, not a finished product:
   own around it.
 - **`ThreadingHTTPServer`**, which is fine for local use and small-scale
   demos. Putting either mode on the public internet still wants a real
-  WSGI/ASGI server behind a reverse proxy and per-user rate limiting, which
-  do not exist yet.
-- **Single-tenant mode is still the default.** Leave the `SUPABASE_*`
-  variables unset and none of the above applies — the original one-workspace
-  behavior is unchanged. It also has no login of its own — see "Access
-  control" above before putting it on a public server.
+  WSGI/ASGI server behind a reverse proxy. Login/signup are rate-limited
+  (see "Security notes"); generation endpoints and everything else are
+  not yet — the money-cost gate and the mandatory-auth requirement are the
+  real brakes on abuse there today, not a request-rate limit.
+- **`SUPABASE_*` unset means generation doesn't work at all, not that it's
+  open to anyone.** There is no single-tenant "no login" mode for spending
+  money any more (see "Access control" above) — leaving these variables
+  unset just means nobody, including the deployment's own owner, can
+  generate anything until they're set. The page itself and job history
+  still load without them; only the paid endpoints are gated.

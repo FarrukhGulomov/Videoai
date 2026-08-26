@@ -576,6 +576,51 @@ a.dl:hover { text-decoration: underline; }
   box-shadow: var(--shadow-lg);
 }
 
+/* ---------- auth modal ---------- */
+
+.auth-modal { text-align: center; }
+.auth-modal .field { text-align: left; }
+.auth-modal .modal-actions { text-align: left; }
+
+.auth-modal-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: var(--accent-grad);
+  box-shadow: 0 6px 18px rgba(91, 63, 242, 0.32);
+  display: grid;
+  place-items: center;
+}
+
+.auth-modal h3 { font-size: 1.3rem; }
+.auth-modal .muted.small { margin: 4px 0 18px; }
+
+.password-wrap { position: relative; }
+.password-wrap input { padding-right: 46px; }
+.password-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  font-size: 1.05rem;
+  padding: 8px 10px;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity .12s;
+}
+.password-toggle:hover { opacity: 1; }
+
+.auth-modal-footnote {
+  text-align: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 .confirm-amount {
   font-size: 2.3rem;
   font-weight: 820;
