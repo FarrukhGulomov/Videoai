@@ -47,11 +47,47 @@ JOBS_FILE = WORK / "webapp_jobs.jsonl"
 
 MAX_BODY_BYTES = 2 * 1024 * 1024  # prompts and settings only; media goes by URL
 
-# "local" is the owner_id for every job when Supabase isn't configured --
-# this is what keeps the pre-multi-user single-tenant flow working exactly
-# as before with zero config changes (see supabase_client.configured()).
+# "local" is the owner_id used only for reading job history when Supabase
+# isn't configured (see _owner_id()) -- generation itself no longer has a
+# LOCAL_OWNER bypass (see _require_funded_user()): every paid action
+# requires a real signed-in user regardless of deployment mode.
 LOCAL_OWNER = "local"
 SESSION_COOKIE = "vf_session"
+
+# Sent on every response via _send() -- static files, JSON, media, all of
+# it, since they all funnel through that one method. No inline <script>,
+# no inline `style="..."`, and no onclick="" attributes exist anywhere in
+# webapp/static/ (every handler is wired with addEventListener, every
+# style rule lives in app.css) -- verified before writing this, since a
+# CSP this strict silently breaks the page if that ever stops being true.
+# Generated media is served from fal.ai's CDN (v3.fal.media at the time of
+# writing; the subdomain is wildcarded since fal has changed it before --
+# see BOSHLASH.md), never any other third-party origin.
+SECURITY_HEADERS = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
+    ("Cross-Origin-Opener-Policy", "same-origin"),
+    # Only takes effect when the browser already sees this over HTTPS
+    # (Railway's own domain, or a real TLS-terminating proxy per DEPLOY.md
+    # §5) -- ignored by every browser on a plain-HTTP response, so this is
+    # safe to send unconditionally, including for local development.
+    ("Strict-Transport-Security", "max-age=15552000; includeSubDomains"),
+    ("Content-Security-Policy", (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self'; "
+        "img-src 'self' data: https://*.fal.media; "
+        "media-src 'self' https://*.fal.media; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )),
+]
 
 
 # ---------------------------------------------------------------- factory reuse
@@ -101,12 +137,51 @@ def _current_user(handler):
     return {"id": user["id"], "email": user.get("email"), "access_token": token}
 
 
-def _session_cookie_header(access_token, max_age):
-    return ("Set-Cookie", f"{SESSION_COOKIE}={access_token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={max_age}")
+def _session_cookie_header(access_token, max_age, secure=False):
+    flags = "HttpOnly; Path=/; SameSite=Lax" + ("; Secure" if secure else "")
+    return ("Set-Cookie", f"{SESSION_COOKIE}={access_token}; {flags}; Max-Age={max_age}")
 
 
-def _clear_cookie_header():
-    return ("Set-Cookie", f"{SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0")
+def _clear_cookie_header(secure=False):
+    flags = "HttpOnly; Path=/; SameSite=Lax" + ("; Secure" if secure else "")
+    return ("Set-Cookie", f"{SESSION_COOKIE}=; {flags}; Max-Age=0")
+
+
+_AUTH_ATTEMPTS = {}
+_AUTH_ATTEMPTS_LOCK = threading.Lock()
+AUTH_RATE_LIMIT = 8       # attempts
+AUTH_RATE_WINDOW = 300    # seconds
+
+
+def _client_ip(handler):
+    """Best-effort client address for rate limiting only -- never used for
+    anything security-critical beyond that. Prefers X-Forwarded-For (set by
+    Railway's own proxy and any real TLS-terminating proxy per DEPLOY.md
+    §5) since the raw socket address is just the proxy's own IP once one is
+    in front of this server; falls back to the socket address directly for
+    a bare/local run with no proxy."""
+    forwarded = handler.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return handler.client_address[0]
+
+
+def _check_auth_rate_limit(handler):
+    """Simple in-memory sliding-window limiter for /api/auth/login and
+    /api/auth/signup, the two endpoints most worth throttling (credential
+    stuffing, brute force, signup spam). This process is the only server
+    instance (ThreadingHTTPServer, no external process pool) so an
+    in-memory dict is enough -- it resets on restart, an acceptable
+    trade-off for what this guards against. Raises ValueError, handled the
+    same friendly-error way as every other rejection in this file."""
+    ip = _client_ip(handler)
+    now = time.time()
+    with _AUTH_ATTEMPTS_LOCK:
+        attempts = [t for t in _AUTH_ATTEMPTS.get(ip, []) if now - t < AUTH_RATE_WINDOW]
+        if len(attempts) >= AUTH_RATE_LIMIT:
+            raise ValueError("Too many attempts. Wait a few minutes and try again.")
+        attempts.append(now)
+        _AUTH_ATTEMPTS[ip] = attempts
 
 
 def _basic_auth_credentials():
@@ -659,12 +734,23 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- helpers ---------------------------------------------------------
 
+    def _is_https(self):
+        """True when this request reached us over HTTPS -- via a
+        TLS-terminating proxy's X-Forwarded-Proto header (Railway's own
+        domain sets this; see DEPLOY.md §3/§5), since this server itself
+        always speaks plain HTTP (see Dockerfile). Used only to decide
+        whether the session cookie gets the Secure flag; never trusted for
+        anything else. Defaults to false (no Secure flag) so local plain-HTTP
+        development keeps working unchanged."""
+        return self.headers.get("X-Forwarded-Proto", "").strip().lower() == "https"
+
     def _send(self, code, payload, ctype="application/json", extra_headers=None):
         body = json.dumps(payload).encode() if ctype == "application/json" else payload
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
+        for header in SECURITY_HEADERS:
+            self.send_header(*header)
         for header in extra_headers or []:
             self.send_header(*header)
         self.end_headers()
@@ -706,6 +792,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("WWW-Authenticate", 'Basic realm="Video Factory"')
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for header in SECURITY_HEADERS:
+            self.send_header(*header)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -949,12 +1037,13 @@ class Handler(BaseHTTPRequestHandler):
     def _auth_signup(self, body):
         if not db.configured():
             raise ValueError("Sign-up is not enabled on this server.")
+        _check_auth_rate_limit(self)
         email = (body.get("email") or "").strip()
         password = body.get("password") or ""
         if not email or "@" not in email:
             raise ValueError("Enter a valid email address.")
-        if len(password) < 6:
-            raise ValueError("Password must be at least 6 characters.")
+        if len(password) < 8:
+            raise ValueError("Password must be at least 8 characters.")
         try:
             result = db.sign_up(email, password)
         except db.SupabaseError as exc:
@@ -966,11 +1055,13 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "Account created. Check your email to confirm before signing in.",
             })
         return self._send(200, {"user": {"email": email}},
-                          extra_headers=[_session_cookie_header(token, result.get("expires_in", 3600))])
+                          extra_headers=[_session_cookie_header(
+                              token, result.get("expires_in", 3600), secure=self._is_https())])
 
     def _auth_login(self, body):
         if not db.configured():
             raise ValueError("Sign-in is not enabled on this server.")
+        _check_auth_rate_limit(self)
         email = (body.get("email") or "").strip()
         password = body.get("password") or ""
         if not email or not password:
@@ -984,7 +1075,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Incorrect email or password.")
         user = result.get("user") or {}
         return self._send(200, {"user": {"email": user.get("email", email)}},
-                          extra_headers=[_session_cookie_header(token, result.get("expires_in", 3600))])
+                          extra_headers=[_session_cookie_header(
+                              token, result.get("expires_in", 3600), secure=self._is_https())])
 
     def _auth_oauth_callback(self, body):
         """Completes Google (or any future Supabase OAuth provider) sign-in.
@@ -1003,10 +1095,10 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Could not verify that sign-in. Try again.")
         expires_in = int(body.get("expires_in") or 3600)
         return self._send(200, {"user": {"email": user.get("email")}},
-                          extra_headers=[_session_cookie_header(token, expires_in)])
+                          extra_headers=[_session_cookie_header(token, expires_in, secure=self._is_https())])
 
     def _auth_logout(self):
-        return self._send(200, {"ok": True}, extra_headers=[_clear_cookie_header()])
+        return self._send(200, {"ok": True}, extra_headers=[_clear_cookie_header(secure=self._is_https())])
 
     def _quote(self, body):
         """Price a paid call without spending anything — the web equivalent
@@ -1027,23 +1119,32 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _require_funded_user(self, cost):
-        """Shared gate for both generate endpoints: who is this request
-        for, and (in multi-user mode) can they afford it. Returns
-        (owner_id, charge_user_id) or raises ValueError with a message
-        safe to show the caller."""
-        owner = self._owner_id()
-        if owner is None:
-            raise ValueError("Sign in to generate.")
-        if owner == LOCAL_OWNER:
-            return owner, None
+        """Shared gate for every paid endpoint (image, video, postprod,
+        avatar) -- the one choke point all of them call through. A signed-in
+        user with enough balance is required unconditionally, regardless of
+        deployment mode: there is no LOCAL_OWNER/single-tenant bypass here
+        any more. This is deliberate -- generation spends real money against
+        FAL_KEY, and this project's security requirement is that nobody,
+        including a request from the MCP server (which is just another
+        caller of this same HTTP API -- see mcp/README.md), can trigger a
+        paid generation without a verified session. A deployment that
+        hasn't configured SUPABASE_*/DATABASE_URL at all means
+        _current_user() always returns None here, so every generation
+        request is rejected with the same "sign in" error rather than
+        silently running for free -- treat that as a deployment that still
+        needs auth configured, not a supported anonymous mode.
+        Returns (owner_id, charge_user_id) or raises ValueError with a
+        message safe to show the caller."""
         user = _current_user(self)
+        if not user:
+            raise ValueError("Sign in to generate.")
         balance = db.get_balance(user["id"], user["access_token"])
         if balance < cost:
             raise ValueError(
                 f"Not enough credits: balance is ${balance:.2f}, this costs ${cost:.2f}. "
                 "Ask an admin to top up your account."
             )
-        return owner, owner
+        return user["id"], user["id"]
 
     def _generate_image(self, body):
         """approved_cost is OPTIONAL here, unlike video/postprod: the web UI
@@ -1302,6 +1403,14 @@ def main():
 
     if not os.environ.get("FAL_KEY", "").strip():
         print("  WARNING: FAL_KEY is not set — the UI will load but generation will fail.")
+    if not db.configured():
+        print(
+            "  NOTE: SUPABASE_URL/SUPABASE_ANON_KEY are not set. The page and job "
+            "history still load, but nobody can generate anything -- every paid "
+            "endpoint requires a signed-in user unconditionally now (see "
+            "webapp/README.md's 'Access control'). Set them up before expecting "
+            "generation to work."
+        )
     if _basic_auth_credentials():
         print("  HTTP Basic Auth is ON (WEBAPP_BASIC_AUTH_USER/PASS set).")
     elif args.host not in ("127.0.0.1", "localhost", "::1"):

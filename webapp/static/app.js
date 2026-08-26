@@ -253,12 +253,21 @@
     }
   }
 
-  /* Returns true if generation may proceed. In single-tenant mode (auth
-     disabled) this is always true -- that's what keeps the original
-     no-login flow working with zero configuration. */
+  /* Returns true only for a real signed-in user -- there is no bypass for
+     single-tenant/unconfigured deployments any more. webapp/server.py's
+     _require_funded_user() enforces this same rule server-side (the real
+     boundary; this is just the friendly UI path to it), so a request this
+     function let through can never actually spend money for real without
+     a session anyway. If the server has no auth backend configured at all
+     (state.auth.enabled false), opening the login modal would only lead to
+     a dead end ("sign-in not enabled on this server"), so that case gets
+     its own clear message instead of a modal that can't work. */
   function requireSignedIn() {
-    if (!state.auth.enabled) return true;
     if (state.auth.user) return true;
+    if (!state.auth.enabled) {
+      toast(t("toast.authNotConfigured"), true);
+      return false;
+    }
     toast(t("toast.signInFirst"), true);
     openAuthModal("login");
     return false;
@@ -270,6 +279,8 @@
     $("auth-submit").textContent = t(mode === "signup" ? "auth.signup" : "auth.signin");
     $("auth-toggle").textContent = t(mode === "signup" ? "auth.haveAccount" : "auth.needAccount");
     $("auth-error").hidden = true;
+    $("auth-password").type = "password";
+    $("auth-password-toggle").textContent = "👁";
     $("auth-modal").hidden = false;
     $("auth-email").focus();
   }
@@ -282,9 +293,22 @@
       openAuthModal(state.authMode === "signup" ? "login" : "signup"));
     $("auth-submit").addEventListener("click", submitAuth);
     $("auth-google").addEventListener("click", signInWithGoogle);
+    $("auth-password-toggle").addEventListener("click", togglePasswordVisibility);
+    $("auth-password").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitAuth();
+    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("auth-modal").hidden) closeAuthModal();
     });
+  }
+
+  function togglePasswordVisibility() {
+    const input = $("auth-password");
+    const btn = $("auth-password-toggle");
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    btn.textContent = showing ? "👁" : "🙈";
+    btn.setAttribute("aria-label", t(showing ? "auth.showPassword" : "auth.hidePassword"));
   }
 
   async function submitAuth() {
