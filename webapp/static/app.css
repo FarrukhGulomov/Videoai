@@ -151,6 +151,24 @@ p { margin: 5px 0 0; }
   font-weight: 650;
 }
 
+/* A quiet secondary entry point, deliberately lighter than a .tab --
+   for the one destination (MCP/API setup) that isn't meant for every
+   visitor, kept one click away without competing for attention with
+   Create/Avatar/Videolarim in the main tab bar. */
+.link-subtle {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  padding: 6px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.link-subtle:hover { color: var(--text); }
+.link-subtle.is-active { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+
 /* ---------- tab bar (own row: less crowding, bigger targets) ---------- */
 
 .tabbar {
@@ -302,6 +320,29 @@ textarea:focus, select:focus, input:focus {
 }
 .chip:hover { border-color: var(--line-strong); }
 .chip.is-active { background: var(--accent-grad); border-color: transparent; color: #fff; box-shadow: 0 3px 10px rgba(91, 63, 242, 0.25); }
+
+/* ---------- optional advanced disclosure (e.g. exact-model picker) ---------- */
+
+.model-advanced { margin: 2px 0 16px; }
+.model-advanced summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 640;
+  padding: 4px 0;
+  width: fit-content;
+}
+.model-advanced summary::-webkit-details-marker { display: none; }
+.model-advanced summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 5px;
+  transition: transform .12s;
+}
+.model-advanced[open] summary::before { transform: rotate(90deg); }
+.model-advanced summary:hover { color: var(--text); }
+.model-advanced .presets { margin-top: 10px; margin-bottom: 0; }
 
 /* ---------- buttons ---------- */
 

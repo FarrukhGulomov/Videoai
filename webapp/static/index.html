@@ -19,6 +19,7 @@
   </div>
   <div class="topbar-right">
     <span id="health" class="health" hidden></span>
+    <button id="tab-mcp" class="link-subtle" type="button" data-i18n="nav.mcp">MCP</button>
     <select id="lang-picker" class="lang-picker" aria-label="Til / Language / Язык">
       <option value="uz">O'zbek</option>
       <option value="ru">Русский</option>
@@ -32,7 +33,6 @@
   <button id="tab-create" class="tab is-active" type="button" data-i18n="nav.create">Yaratish</button>
   <button id="tab-avatar" class="tab" type="button" data-i18n="nav.avatar">Avatar</button>
   <button id="tab-history" class="tab" type="button" data-i18n="nav.history">Videolarim</button>
-  <button id="tab-mcp" class="tab" type="button" data-i18n="nav.mcp">MCP</button>
 </nav>
 
 <main>
@@ -98,7 +98,10 @@
         <span class="chip-label" data-i18n="step3.quality">Sifat darajasi</span>
         <div id="tier-chips" class="chips"></div>
       </div>
-      <div id="model-grid" class="presets"></div>
+      <details class="model-advanced">
+        <summary data-i18n="step3.modelAdvanced">Aniq modelni tanlash (ixtiyoriy)</summary>
+        <div id="model-grid" class="presets"></div>
+      </details>
 
       <button id="btn-video" class="btn primary big" type="button" disabled data-i18n="step3.button">Video yaratish</button>
       <p id="video-gate" class="hint" data-i18n="step3.gate">Avval 2-qadamda suratni tanlang</p>
