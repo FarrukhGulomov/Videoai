@@ -1,11 +1,10 @@
 /* Video Factory — front end. No framework, no build step.
-   Simplified deliberately: no aspect/variant pickers in the main flow --
-   the server's own defaults are used, and duration is three plain words
-   instead of a number of seconds. Anyone should be able to use this
-   without knowing what "aspect ratio" means. Model choice IS exposed
-   (grouped budget/standard/premium) -- a user who doesn't mind the price
-   should be able to reach the best available quality, not just the
-   cheapest one, without that choice being hidden from them. */
+   Simplified deliberately: every video model is shown as one flat list of
+   looks/styles, with no dollar amount attached to any of them -- price
+   shopping across models isn't something a first-time user should have to
+   do. The one place a price is still shown is the confirm dialog right
+   before anything is actually charged (see openConfirm/askForVideo) --
+   that's the money-safety gate, not a shopping decision, and stays. */
 
 (() => {
   "use strict";
@@ -17,8 +16,8 @@
     selectedImage: null,
     activePreset: null,
     selectedSeconds: null,
-    selectedTier: "standard",
     selectedModel: null,
+    selectedPlatform: null,
     avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
@@ -121,8 +120,10 @@
       return;
     }
     renderPresets();
-    renderTierChips();
+    renderPlatformChips();
+    renderModelGrid();
     wireStaticControls();
+    wireImageUpload();
     wireAuth();
     wirePostprod();
     wireAvatar();
@@ -137,7 +138,8 @@
     picker.addEventListener("change", () => {
       setLang(picker.value);
       renderPresets();
-      renderTierChips();
+      renderPlatformChips();
+      renderModelGrid();
       renderAvatarResChips();
       renderAuthBar();
       renderHealthBadge();
@@ -379,6 +381,82 @@
     toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
   }
 
+  // ------------------------------------------------- platform (aspect ratio)
+
+  /* "Where will you post it?" instead of "aspect ratio" -- same philosophy
+     as the rest of this file: anyone should be able to use this without
+     knowing what an aspect ratio is. Two platforms can share a ratio
+     (Instagram and TikTok are both vertical) -- that's fine, the chip is
+     labeled by the destination, not the number. */
+  const PLATFORM_PRESETS = [
+    { id: "instagram", aspect: "9:16", labelKey: "platform.instagram" },
+    { id: "tiktok", aspect: "9:16", labelKey: "platform.tiktok" },
+    { id: "youtube", aspect: "16:9", labelKey: "platform.youtube" },
+    { id: "square", aspect: "1:1", labelKey: "platform.square" },
+  ];
+
+  function renderPlatformChips() {
+    if (!state.selectedPlatform) state.selectedPlatform = PLATFORM_PRESETS[0].id;
+    const wrap = $("platform-chips");
+    wrap.replaceChildren(...PLATFORM_PRESETS.map((p) =>
+      el("button", {
+        class: "chip" + (p.id === state.selectedPlatform ? " is-active" : ""),
+        type: "button", "data-platform": p.id,
+        onclick: () => selectPlatform(p.id),
+        text: t(p.labelKey),
+      })));
+  }
+
+  function selectPlatform(id) {
+    state.selectedPlatform = id;
+    for (const chip of document.querySelectorAll("#platform-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.platform === id);
+    }
+  }
+
+  function selectedAspectRatio() {
+    const p = PLATFORM_PRESETS.find((p) => p.id === state.selectedPlatform);
+    return p ? p.aspect : "16:9";
+  }
+
+  // ---------------------------------------------------------- image upload
+
+  const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+  function wireImageUpload() {
+    $("image-upload").addEventListener("change", handleImageUpload);
+  }
+
+  /* Uploading skips AI image generation entirely -- the file becomes the
+     video's starting frame directly, sent later as a data: URI (the
+     server explicitly allows that for image_url, see webapp/server.py's
+     _require_public_url). renderImageChoices() already auto-selects when
+     given exactly one candidate, so this reuses the exact same selection
+     path a generated photo goes through. */
+  function handleImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast(t("toast.notAnImage"), true);
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast(t("toast.imageTooLarge"), true);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      $("upload-filename").textContent = file.name;
+      state.activePreset = null;
+      renderImageChoices([reader.result]);
+      toast(t("toast.imageUploaded"));
+    };
+    reader.onerror = () => toast(t("common.connectError"), true);
+    reader.readAsDataURL(file);
+  }
+
   // --------------------------------------------------------- static wiring
 
   /* Durations are per-model (fal's own real constraint differs by model --
@@ -414,39 +492,15 @@
       Math.abs(cur - target) < Math.abs(best - target) ? cur : best, options[0]);
   }
 
-  // ----------------------------------------------------- model quality tier
+  // ----------------------------------------------------------------- model
 
-  const TIERS_ORDER = ["budget", "standard", "premium"];
-  const TIER_LABEL_KEYS = { budget: "tier.budget", standard: "tier.standard", premium: "tier.premium" };
-
-  function renderTierChips() {
-    if (!state.config) return;
-    const present = TIERS_ORDER.filter((tier) => state.config.models.some((m) => (m.tier || "standard") === tier));
-    const wrap = $("tier-chips");
-    wrap.replaceChildren(...present.map((tier) =>
-      el("button", {
-        class: "chip" + (tier === state.selectedTier ? " is-active" : ""),
-        type: "button", "data-tier": tier,
-        onclick: () => selectTier(tier),
-        text: t(TIER_LABEL_KEYS[tier]),
-      })));
-    renderModelGrid();
-  }
-
-  function selectTier(tier) {
-    state.selectedTier = tier;
-    for (const chip of document.querySelectorAll("#tier-chips .chip")) {
-      chip.classList.toggle("is-active", chip.dataset.tier === tier);
-    }
-    renderModelGrid();
-  }
-
+  /* Every model, one flat list -- no budget/standard/premium grouping and
+     no dollar rate on the card (see the file-top comment for why). A user
+     picks by look/style, not by price; the final price is quoted and
+     confirmed once, right before the video actually generates. */
   function renderModelGrid() {
     if (!state.config) return;
-    const models = state.config.models.filter((m) => (m.tier || "standard") === state.selectedTier);
-    // Keep the selection valid: if nothing's picked yet, or the current pick
-    // isn't in the now-visible tier, fall back to this tier's own default
-    // (or its first model).
+    const models = state.config.models;
     if (!state.selectedModel || !models.some((m) => m.id === state.selectedModel)) {
       const fallback = models.find((m) => m.default) || models[0];
       state.selectedModel = fallback ? fallback.id : null;
@@ -458,7 +512,7 @@
         type: "button", "data-id": m.id,
         onclick: () => selectModel(m.id),
       },
-        el("strong", { text: `${label.name} · $${m.rate}/s` }),
+        el("strong", { text: label.name }),
         el("span", { text: label.note }));
     }));
     renderDurationChips();
@@ -612,7 +666,7 @@
     try {
       const job = await api("/api/generate/image", {
         method: "POST",
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, aspect: selectedAspectRatio() }),
       });
       poll(job.id,
         (done) => {

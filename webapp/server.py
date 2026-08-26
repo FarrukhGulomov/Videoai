@@ -796,10 +796,14 @@ class Handler(BaseHTTPRequestHandler):
 
         Every model is listed -- including the two expensive "top quality,
         cost no object" ones -- rather than hidden behind a picker only
-        power users find. `tier` lets the UI group them (budget/standard/
-        premium) so a price-conscious user sees Kling first and a
-        quality-first user can deliberately reach past it, without either
-        one being hidden from the other."""
+        power users find. `rate` and `tier` are still included for callers
+        that need them (the MCP tools' get_info reasons about price/tier
+        explicitly when an AI is picking a model on a user's behalf -- see
+        mcp/README.md's "Picking a model") -- the website's own UI simply
+        doesn't render either field: models are shown as one flat list of
+        looks/styles with no dollar amount attached, and the final price is
+        surfaced once, at the confirm-before-charging step, not while
+        choosing a model."""
         rates = CONFIG["rates"]["final_take_per_second_usd_by_model"]
         models = [
             {

@@ -39,15 +39,23 @@
   <!-- ============ CREATE ============ -->
   <section id="view-create" class="view">
 
-    <!-- Step 1 -->
     <section class="step" aria-labelledby="s1">
       <div class="step-head">
-        <span class="step-num" data-i18n="step1.badge">1</span>
         <div>
-          <h2 id="s1" data-i18n="step1.title">Nima haqida video?</h2>
-          <p class="muted" data-i18n="step1.subtitle">Ko'rmoqchi bo'lgan manzarani so'zlar bilan tasvirlab bering</p>
+          <h2 id="s1" data-i18n="step1.title">Video yarating</h2>
+          <p class="muted" data-i18n="step1.subtitle">Rasm yuklang yoki ko'rmoqchi bo'lgan manzarani so'zlar bilan tasvirlab bering</p>
         </div>
       </div>
+
+      <div class="upload-row">
+        <label class="btn ghost upload-btn">
+          <input id="image-upload" type="file" accept="image/*" hidden>
+          <span data-i18n="step1.upload">Rasm yuklash</span>
+        </label>
+        <span id="upload-filename" class="muted small"></span>
+      </div>
+
+      <div class="or-divider"><span data-i18n="step1.or">yoki tasvirlab bering</span></div>
 
       <span class="chip-label" data-i18n="step1.presets">Tayyor g'oyalar</span>
       <div id="presets" class="presets" role="group" aria-label="Presets"></div>
@@ -57,69 +65,49 @@
 
       <button id="btn-image" class="btn primary big" type="button" data-i18n="step1.button">Suratlarni yaratish</button>
       <p class="hint" data-i18n="step1.hint">Avval bir nechta surat yaratiladi — eng yaxshisini o'zingiz tanlaysiz</p>
-    </section>
 
-    <!-- Step 2 -->
-    <section class="step" aria-labelledby="s2">
-      <div class="step-head">
-        <span class="step-num">2</span>
-        <div>
-          <h2 id="s2" data-i18n="step2.title">Birini tanlang</h2>
-          <p class="muted" data-i18n="step2.subtitle">Video aynan shu suratdan jonlanadi</p>
-        </div>
+      <div class="chip-row">
+        <span class="chip-label" data-i18n="step1.platform">Qayerga joylaysiz?</span>
+        <div id="platform-chips" class="chips"></div>
       </div>
+
       <div id="image-results" class="results" aria-live="polite">
         <div class="empty">
           <p><strong data-i18n="step2.empty.title">Hali surat yo'q</strong></p>
           <p class="muted" data-i18n="step2.empty.body">Yuqorida video haqida yozib, yaratishni bosing</p>
         </div>
       </div>
-    </section>
 
-    <!-- Step 3 -->
-    <section class="step" id="step-video" aria-labelledby="s3">
-      <div class="step-head">
-        <span class="step-num">3</span>
-        <div>
-          <h2 id="s3" data-i18n="step3.title">Endi jonlantiramiz</h2>
-          <p class="muted" data-i18n="step3.subtitle">Suratda nima harakat qilishini yozing (ixtiyoriy)</p>
+      <div class="section-divider"></div>
+
+      <div id="step-video">
+        <h3 data-i18n="step3.title">Endi jonlantiramiz</h3>
+        <p class="muted" data-i18n="step3.subtitle">Suratda nima harakat qilishini yozing (ixtiyoriy)</p>
+
+        <textarea id="video-prompt" rows="2" class="big-input"
+          data-i18n-placeholder="step3.placeholder"></textarea>
+
+        <div class="chip-row">
+          <span class="chip-label" data-i18n="step3.duration">Davomiyligi</span>
+          <div id="duration-chips" class="chips"></div>
         </div>
-      </div>
 
-      <textarea id="video-prompt" rows="2" class="big-input"
-        data-i18n-placeholder="step3.placeholder"></textarea>
-
-      <div class="chip-row">
-        <span class="chip-label" data-i18n="step3.duration">Davomiyligi</span>
-        <div id="duration-chips" class="chips"></div>
-      </div>
-
-      <div class="chip-row">
-        <span class="chip-label" data-i18n="step3.quality">Sifat darajasi</span>
-        <div id="tier-chips" class="chips"></div>
-      </div>
-      <details class="model-advanced">
-        <summary data-i18n="step3.modelAdvanced">Aniq modelni tanlash (ixtiyoriy)</summary>
+        <span class="chip-label" data-i18n="step3.model">Uslubni tanlang</span>
         <div id="model-grid" class="presets"></div>
-      </details>
 
-      <button id="btn-video" class="btn primary big" type="button" disabled data-i18n="step3.button">Video yaratish</button>
-      <p id="video-gate" class="hint" data-i18n="step3.gate">Avval 2-qadamda suratni tanlang</p>
-    </section>
-
-    <!-- Step 4 -->
-    <section class="step" aria-labelledby="s4">
-      <div class="step-head">
-        <span class="step-num">4</span>
-        <div>
-          <h2 id="s4" data-i18n="step4.title">Videongiz tayyor</h2>
-          <p class="muted" data-i18n="step4.subtitle">Ko'ring, yuklab oling yoki yaxshilang</p>
-        </div>
+        <button id="btn-video" class="btn primary big" type="button" disabled data-i18n="step3.button">Video yaratish</button>
+        <p id="video-gate" class="hint" data-i18n="step3.gate">Avval 2-qadamda suratni tanlang</p>
       </div>
-      <div id="video-results" class="results" aria-live="polite">
-        <div class="empty">
-          <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
-          <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+
+      <div class="section-divider"></div>
+
+      <div>
+        <h3 data-i18n="step4.title">Videongiz tayyor</h3>
+        <div id="video-results" class="results" aria-live="polite">
+          <div class="empty">
+            <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
+            <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+          </div>
         </div>
       </div>
     </section>
