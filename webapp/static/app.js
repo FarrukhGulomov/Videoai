@@ -13,11 +13,14 @@
   const state = {
     config: null,
     health: null,
+    mode: null,
     selectedImage: null,
+    imageWasUploaded: false,
     activePreset: null,
+    presetMotion: null,
     selectedSeconds: null,
     selectedModel: null,
-    selectedPlatform: null,
+    imageOnlyRefs: [],
     avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
@@ -120,10 +123,13 @@
       return;
     }
     renderPresets();
-    renderPlatformChips();
+    renderAspectSelect("aspect-select");
+    renderAspectSelect("image-aspect-select");
     renderModelGrid();
+    wireModePicker();
     wireStaticControls();
     wireImageUpload();
+    wireImageOnly();
     wireAuth();
     wirePostprod();
     wireAvatar();
@@ -138,7 +144,8 @@
     picker.addEventListener("change", () => {
       setLang(picker.value);
       renderPresets();
-      renderPlatformChips();
+      renderAspectSelect("aspect-select");
+      renderAspectSelect("image-aspect-select");
       renderModelGrid();
       renderAvatarResChips();
       renderAuthBar();
@@ -364,9 +371,14 @@
     }));
   }
 
+  /* Presets are camera/motion styles (see webapp/server.py's PRESETS) --
+     there's no separate "motion" box in this UI anymore, so a chosen
+     preset is remembered silently and applied later by motionPromptText(),
+     instead of overwriting the one visible prompt field (which describes
+     the image, or the upload's motion -- see that function). */
   function applyPreset(preset) {
     state.activePreset = preset.id;
-    $("video-prompt").value = preset.motion;
+    state.presetMotion = preset.motion;
     if (preset.seconds) {
       // The preset's `seconds` is a suggested length, not guaranteed to be
       // one of the currently-selected model's own valid options -- snap to
@@ -381,42 +393,37 @@
     toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
   }
 
-  // ------------------------------------------------- platform (aspect ratio)
+  // ------------------------------------------------- size (aspect ratio)
 
-  /* "Where will you post it?" instead of "aspect ratio" -- same philosophy
-     as the rest of this file: anyone should be able to use this without
-     knowing what an aspect ratio is. Two platforms can share a ratio
-     (Instagram and TikTok are both vertical) -- that's fine, the chip is
-     labeled by the destination, not the number. */
-  const PLATFORM_PRESETS = [
+  /* A dropdown of destinations instead of exposing "aspect ratio" as a
+     concept -- same philosophy as the rest of this file: anyone should be
+     able to use this without knowing what an aspect ratio is. Two
+     platforms can share a ratio (Instagram and TikTok are both vertical)
+     -- that's fine, the option is labeled by the destination, not the
+     number. Both the image-only panel and the video panel get their own
+     <select> (image-aspect-select / aspect-select) so picking one doesn't
+     affect the other; both default to Instagram. */
+  const ASPECT_OPTIONS = [
     { id: "instagram", aspect: "9:16", labelKey: "platform.instagram" },
     { id: "tiktok", aspect: "9:16", labelKey: "platform.tiktok" },
     { id: "youtube", aspect: "16:9", labelKey: "platform.youtube" },
     { id: "square", aspect: "1:1", labelKey: "platform.square" },
+    { id: "classic", aspect: "4:3", labelKey: "platform.classic" },
   ];
 
-  function renderPlatformChips() {
-    if (!state.selectedPlatform) state.selectedPlatform = PLATFORM_PRESETS[0].id;
-    const wrap = $("platform-chips");
-    wrap.replaceChildren(...PLATFORM_PRESETS.map((p) =>
-      el("button", {
-        class: "chip" + (p.id === state.selectedPlatform ? " is-active" : ""),
-        type: "button", "data-platform": p.id,
-        onclick: () => selectPlatform(p.id),
-        text: t(p.labelKey),
-      })));
+  function renderAspectSelect(selectId) {
+    const sel = $(selectId);
+    if (!sel) return;
+    const prevValue = sel.value || ASPECT_OPTIONS[0].id;
+    sel.replaceChildren(...ASPECT_OPTIONS.map((o) =>
+      el("option", { value: o.id, text: t(o.labelKey) })));
+    sel.value = ASPECT_OPTIONS.some((o) => o.id === prevValue) ? prevValue : ASPECT_OPTIONS[0].id;
   }
 
-  function selectPlatform(id) {
-    state.selectedPlatform = id;
-    for (const chip of document.querySelectorAll("#platform-chips .chip")) {
-      chip.classList.toggle("is-active", chip.dataset.platform === id);
-    }
-  }
-
-  function selectedAspectRatio() {
-    const p = PLATFORM_PRESETS.find((p) => p.id === state.selectedPlatform);
-    return p ? p.aspect : "16:9";
+  function selectedAspectRatio(selectId) {
+    const sel = $(selectId);
+    const chosen = ASPECT_OPTIONS.find((o) => o.id === (sel && sel.value));
+    return chosen ? chosen.aspect : "9:16";
   }
 
   // ---------------------------------------------------------- image upload
@@ -430,9 +437,12 @@
   /* Uploading skips AI image generation entirely -- the file becomes the
      video's starting frame directly, sent later as a data: URI (the
      server explicitly allows that for image_url, see webapp/server.py's
-     _require_public_url). renderImageChoices() already auto-selects when
-     given exactly one candidate, so this reuses the exact same selection
-     path a generated photo goes through. */
+     _require_public_url). Does NOT auto-advance to the price-confirm step
+     the way picking a *generated* candidate does (see selectImage) --
+     someone who just uploaded a photo probably still wants to type a
+     motion description before anything is quoted, so this only marks the
+     frame as ready and swaps the prompt field's role from "describe the
+     image" to "describe the motion" (see motionPromptText). */
   function handleImageUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -450,11 +460,33 @@
     reader.onload = () => {
       $("upload-filename").textContent = file.name;
       state.activePreset = null;
-      renderImageChoices([reader.result]);
+      state.imageWasUploaded = true;
+      renderImageChoices([reader.result], { autoAdvance: false });
+      $("video-prompt-hint").textContent = t("step1.motionHint");
+      $("image-prompt").placeholder = t("step1.motionPlaceholder");
       toast(t("toast.imageUploaded"));
     };
     reader.onerror = () => toast(t("common.connectError"), true);
     reader.readAsDataURL(file);
+  }
+
+  // ------------------------------------------------------------ mode picker
+
+  /* The Create tab opens on a plain choice -- image or video -- instead of
+     one combined form, so a video model list never has to appear to
+     someone who only wanted a still image, and vice versa. */
+  function wireModePicker() {
+    $("mode-image").addEventListener("click", () => enterMode("image"));
+    $("mode-video").addEventListener("click", () => enterMode("video"));
+    $("back-from-image").addEventListener("click", () => enterMode(null));
+    $("back-from-video").addEventListener("click", () => enterMode(null));
+  }
+
+  function enterMode(mode) {
+    state.mode = mode;
+    $("mode-picker").hidden = mode !== null;
+    $("panel-image").hidden = mode !== "image";
+    $("panel-video").hidden = mode !== "video";
   }
 
   // --------------------------------------------------------- static wiring
@@ -598,8 +630,7 @@
   }
 
   function wireStaticControls() {
-    $("btn-image").addEventListener("click", generateImages);
-    $("btn-video").addEventListener("click", askForVideo);
+    $("btn-video-start").addEventListener("click", startVideoFlow);
     $("tab-create").addEventListener("click", () => switchView("create"));
     $("tab-avatar").addEventListener("click", () => switchView("avatar"));
     $("tab-history").addEventListener("click", () => switchView("history"));
@@ -650,8 +681,21 @@
 
   // -------------------------------------------------------------- images
 
-  async function generateImages() {
+  /* The video panel's single action button: generate a starting frame
+     first if there isn't one yet (from the prompt), or -- once a frame
+     exists, whether uploaded or picked from generated candidates -- go
+     straight to pricing the video. Same button, two jobs, depending on
+     where state.selectedImage stands. */
+  async function startVideoFlow() {
     if (!requireSignedIn()) return;
+    if (state.selectedImage) {
+      await askForVideo();
+      return;
+    }
+    await generateImagesForVideo();
+  }
+
+  async function generateImagesForVideo() {
     const prompt = $("image-prompt").value.trim();
     if (!prompt) {
       toast(t("toast.describeFirst"), true);
@@ -659,20 +703,22 @@
       return;
     }
 
-    const btn = $("btn-image");
+    state.imageWasUploaded = false;
+    const btn = $("btn-video-start");
     btn.disabled = true;
+    $("image-results").hidden = false;
     setPanel($("image-results"), workingPanel());
 
     try {
       const job = await api("/api/generate/image", {
         method: "POST",
-        body: JSON.stringify({ prompt, aspect: selectedAspectRatio() }),
+        body: JSON.stringify({ prompt, aspect: selectedAspectRatio("aspect-select") }),
       });
       poll(job.id,
         (done) => {
           btn.disabled = false;
           if (done.status === "error") {
-            setPanel($("image-results"), errorPanel(translateApiError(done.error), generateImages));
+            setPanel($("image-results"), errorPanel(translateApiError(done.error), generateImagesForVideo));
             return;
           }
           renderImageChoices(done.outputs || []);
@@ -682,11 +728,18 @@
         () => setPanel($("image-results"), workingPanel()));
     } catch (err) {
       btn.disabled = false;
-      setPanel($("image-results"), errorPanel(err.message, generateImages));
+      setPanel($("image-results"), errorPanel(err.message, generateImagesForVideo));
     }
   }
 
-  function renderImageChoices(urls) {
+  /* opts.autoAdvance (default true) immediately continues to the price
+     quote once a frame is chosen -- right for a generated candidate (the
+     prompt already fully described it, nothing left to add), wrong right
+     after an upload (see handleImageUpload, which passes false so the
+     user can still type a motion description first). */
+  function renderImageChoices(urls, opts = {}) {
+    const autoAdvance = opts.autoAdvance !== false;
+    $("image-results").hidden = false;
     if (!urls.length) {
       setPanel($("image-results"), el("div", { class: "empty" },
         el("p", {}, el("strong", { text: t("toast.noImages") }))));
@@ -702,24 +755,36 @@
           el("span", { class: "spacer" }),
           el("button", {
             class: "btn primary small", type: "button", text: t("step2.choose"),
-            onclick: () => selectImage(url, i),
+            onclick: () => selectImage(url, i, autoAdvance),
           })));
       return card;
     });
     $("image-results").replaceChildren(...cards);
-    if (urls.length === 1) selectImage(urls[0], 0);
+    if (urls.length === 1) selectImage(urls[0], 0, autoAdvance);
   }
 
-  function selectImage(url, index) {
+  function selectImage(url, index, autoAdvance = true) {
     state.selectedImage = url;
     for (const card of document.querySelectorAll("#image-results .card")) {
       card.classList.toggle("is-selected", Number(card.dataset.index) === index);
       const btn = card.querySelector(".btn");
       if (btn) btn.textContent = Number(card.dataset.index) === index ? t("step2.chosen") : t("step2.choose");
     }
-    $("btn-video").disabled = false;
-    $("video-gate").textContent = t("step3.ready");
-    $("step-video").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (autoAdvance) askForVideo();
+  }
+
+  /* The single visible prompt field means one field, two possible jobs:
+     if the frame came from AI image generation, the prompt already spent
+     itself describing that image, so the actual video motion falls back
+     to a chosen preset (see applyPreset) or a safe generic default. If the
+     frame was uploaded directly, there was nothing else for the prompt to
+     describe -- it IS the motion instruction (see handleImageUpload,
+     which swaps the field's placeholder/hint to match). */
+  function motionPromptText() {
+    const prompt = $("image-prompt").value.trim();
+    if (state.imageWasUploaded && prompt) return prompt;
+    return state.presetMotion
+      || "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion.";
   }
 
   // -------------------------------------------------------------- video
@@ -732,8 +797,7 @@
       toast(t("toast.pickFrame"), true);
       return;
     }
-    const prompt = $("video-prompt").value.trim()
-      || "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion.";
+    const prompt = motionPromptText();
 
     let quote;
     try {
@@ -773,7 +837,7 @@
   });
 
   async function startVideo(prompt, quote) {
-    const btn = $("btn-video");
+    const btn = $("btn-video-start");
     btn.disabled = true;
     setPanel($("video-results"), workingPanel());
 
@@ -826,6 +890,94 @@
                           onclick: () => openPostprodModal(url) }),
           el("a", { class: "dl", href: url, download: "", target: "_blank",
                     rel: "noopener", text: t("step4.download") }))));
+  }
+
+  // --------------------------------------------------------- image-only mode
+
+  /* Standalone image generation -- no motion, no model choice (this
+     project has exactly one still-image model; see webapp/server.py's
+     _generate_image), no selection step. Every variant just renders with
+     its own download link -- there's no "next step" to pick one for. */
+  function wireImageOnly() {
+    $("btn-image-only").addEventListener("click", generateImageOnly);
+    $("image-ref-upload").addEventListener("change", handleImageRefUpload);
+  }
+
+  function handleImageRefUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast(t("toast.notAnImage"), true);
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast(t("toast.imageTooLarge"), true);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.imageOnlyRefs = [reader.result];
+      $("image-ref-filename").textContent = file.name;
+    };
+    reader.onerror = () => toast(t("common.connectError"), true);
+    reader.readAsDataURL(file);
+  }
+
+  async function generateImageOnly() {
+    if (!requireSignedIn()) return;
+    const prompt = $("image-only-prompt").value.trim();
+    if (!prompt) {
+      toast(t("toast.describeFirst"), true);
+      $("image-only-prompt").focus();
+      return;
+    }
+
+    const btn = $("btn-image-only");
+    btn.disabled = true;
+    setPanel($("image-only-results"), workingPanel());
+
+    try {
+      const job = await api("/api/generate/image", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          aspect: selectedAspectRatio("image-aspect-select"),
+          refs: state.imageOnlyRefs,
+        }),
+      });
+      poll(job.id,
+        (done) => {
+          btn.disabled = false;
+          if (done.status === "error") {
+            setPanel($("image-only-results"), errorPanel(translateApiError(done.error), generateImageOnly));
+            return;
+          }
+          renderImageOnlyResults(done.outputs || []);
+          loadHistory();
+          checkAuth();
+        },
+        () => setPanel($("image-only-results"), workingPanel()));
+    } catch (err) {
+      btn.disabled = false;
+      setPanel($("image-only-results"), errorPanel(err.message, generateImageOnly));
+    }
+  }
+
+  function renderImageOnlyResults(urls) {
+    if (!urls.length) {
+      setPanel($("image-only-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noImages") }))));
+      return;
+    }
+    $("image-only-results").replaceChildren(...urls.map((url) =>
+      el("div", { class: "card" },
+        el("img", { src: url, alt: "", loading: "lazy" }),
+        el("div", { class: "card-body" },
+          el("span", { class: "spacer" }),
+          el("a", { class: "dl", href: url, download: "", target: "_blank",
+                    rel: "noopener", text: t("step4.download") })))));
   }
 
   // ------------------------------------------------------------ history
