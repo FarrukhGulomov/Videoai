@@ -1,0 +1,11 @@
+# Only needed when running webapp/server.py against a self-hosted Postgres
+# server (DATABASE_URL set, webapp/pg_client.py active) instead of Supabase.
+#
+# Single-tenant mode and Supabase mode need nothing from this file --
+# they stay stdlib-only, exactly as before. This is the one dependency
+# the self-hosted-Postgres path accepts, because Python's standard
+# library has no Postgres wire-protocol client of its own.
+#
+#   pip install -r webapp/requirements-postgres.txt
+
+psycopg[binary]>=3.1,<4
