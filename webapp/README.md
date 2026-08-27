@@ -140,6 +140,42 @@ Results land in History as an "Enhanced (op)" card once done. Multi-shot
 continuity (`final --shots-json`) is a CLI-only, authoring-time decision
 (you choose it before generating, not after) and isn't exposed here.
 
+### Payments — letting users top up their own balance
+
+A signed-in user can add credit to their own balance from the "Top up"
+button next to it, instead of you granting credit by hand. Three providers
+are supported, each entirely opt-in via its own env vars (see
+`.env.example`): **Stripe** (card payments, works anywhere), **Payme**, and
+**Click** (the two common Uzbek payment services). The "Top up" button only
+shows the providers whose env vars are actually set — `GET /api/config`'s
+`topup.providers` list reflects that, so an unconfigured provider is simply
+absent from the UI rather than shown broken.
+
+How a top-up works: `POST /api/topup/create` records a pending top-up and
+asks the chosen provider for a checkout URL, then the browser is sent there.
+The account is **not** credited at that point — only the provider's own
+webhook, called back to this server independently of the browser, credits
+it (`POST /api/topup/stripe/webhook`, `/api/topup/payme`,
+`/api/topup/click/prepare` + `/api/topup/click/complete`). This means a
+closed tab or a cancelled payment never leaves a half-finished charge: the
+balance only moves once the provider itself confirms the money arrived.
+Crediting is idempotent — a provider retrying its webhook (all three do)
+never double-credits.
+
+Payme and Click bill in UZS; this project's balances are USD, so
+`USD_TO_UZS_RATE` (a plain number, so'm per dollar) must be set for either
+of them to work, with no built-in fallback — you set the rate, so nobody is
+ever charged against a stale one baked into the code.
+
+**Verification status**: Stripe's implementation was built against Stripe's
+own, reachable API docs and its protocol is stable — reasonably safe to
+trust as-is once real keys are in place. Payme and Click could not be
+verified against their official docs from the environment this was built
+in (both doc domains were unreachable there), so their implementations were
+reconstructed from secondary sources and cross-referenced for consistency,
+but are **not yet confirmed correct**. See `PAYMENTS.md` at the repo root
+for exactly what to check before relying on either of them with real money.
+
 ## How the money gate works
 
 The CLI refuses to run a paid call unless `--i-approve-cost` matches the real
