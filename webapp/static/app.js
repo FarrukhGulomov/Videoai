@@ -18,6 +18,7 @@
     imageWasUploaded: false,
     activePreset: null,
     presetMotion: null,
+    selectedCameraMove: null,
     selectedSeconds: null,
     selectedModel: null,
     imageOnlyRefs: [],
@@ -123,6 +124,7 @@
       return;
     }
     renderPresets();
+    renderCameraChips();
     renderAspectSelect("aspect-select");
     renderAspectSelect("image-aspect-select");
     renderModelGrid();
@@ -144,6 +146,7 @@
     picker.addEventListener("change", () => {
       setLang(picker.value);
       renderPresets();
+      renderCameraChips();
       renderAspectSelect("aspect-select");
       renderAspectSelect("image-aspect-select");
       renderModelGrid();
@@ -403,6 +406,11 @@
   function applyPreset(preset) {
     state.activePreset = preset.id;
     state.presetMotion = preset.motion;
+    // A preset and a camera-move chip both answer the same question
+    // ("how does this shot move") at different levels of detail -- picking
+    // one clears the other rather than trying to combine two motion
+    // instructions into one prompt.
+    deselectCameraMove();
     if (preset.seconds) {
       // The preset's `seconds` is a suggested length, not guaranteed to be
       // one of the currently-selected model's own valid options -- snap to
@@ -415,6 +423,61 @@
       btn.classList.toggle("is-active", btn.dataset.id === preset.id);
     }
     toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
+  }
+
+  // --------------------------------------------------------- camera moves
+
+  /* A tested, specific vocabulary (see fal-master-prompt.md section 3) --
+     one move, a magnitude, a duration, never stacked -- rather than vague
+     terms an image-to-video model interprets inconsistently. "held" is the
+     same ambient-motion fallback askForVideo() already used, expressed as
+     a selectable option instead of a hidden default, and its text is the
+     single source of truth motionPromptText() falls back to. Mutually
+     exclusive with presets (see applyPreset) -- both describe the same
+     "how does this shot move" choice, one raw, one as a named style. */
+  const CAMERA_MOVES = [
+    { id: "held", labelKey: "camera.held",
+      text: "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion throughout." },
+    { id: "pushin", labelKey: "camera.pushIn",
+      text: "Slow push in, 15% over the full duration. Subject stays still; no lighting change." },
+    { id: "pullout", labelKey: "camera.pullOut",
+      text: "Slow pull back, 20% over the full duration, revealing more of the scene." },
+    { id: "panleft", labelKey: "camera.panLeft",
+      text: "Gentle pan left, 10 degrees over the full duration." },
+    { id: "panright", labelKey: "camera.panRight",
+      text: "Gentle pan right, 10 degrees over the full duration." },
+    { id: "reveal", labelKey: "camera.reveal",
+      text: "Camera starts high looking down, then pushes in and drops to a low three-quarter angle, revealing the environment as it settles." },
+  ];
+
+  function renderCameraChips() {
+    const wrap = $("camera-chips");
+    wrap.replaceChildren(...CAMERA_MOVES.map((move) =>
+      el("button", {
+        class: "chip" + (move.id === state.selectedCameraMove ? " is-active" : ""),
+        type: "button", "data-move": move.id,
+        onclick: () => selectCameraMove(move.id),
+        text: t(move.labelKey),
+      })));
+  }
+
+  function selectCameraMove(id) {
+    state.selectedCameraMove = state.selectedCameraMove === id ? null : id;
+    state.activePreset = null;
+    state.presetMotion = null;
+    for (const chip of document.querySelectorAll("#camera-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.move === state.selectedCameraMove);
+    }
+    for (const btn of document.querySelectorAll("#presets .preset")) {
+      btn.classList.remove("is-active");
+    }
+  }
+
+  function deselectCameraMove() {
+    state.selectedCameraMove = null;
+    for (const chip of document.querySelectorAll("#camera-chips .chip")) {
+      chip.classList.remove("is-active");
+    }
   }
 
   // ------------------------------------------------- size (aspect ratio)
@@ -807,8 +870,9 @@
   function motionPromptText() {
     const prompt = $("image-prompt").value.trim();
     if (state.imageWasUploaded && prompt) return prompt;
-    return state.presetMotion
-      || "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion.";
+    const move = CAMERA_MOVES.find((m) => m.id === state.selectedCameraMove);
+    if (move) return move.text;
+    return state.presetMotion || CAMERA_MOVES[0].text; // CAMERA_MOVES[0] is "held" -- same ambient fallback as before
   }
 
   // -------------------------------------------------------------- video

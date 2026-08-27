@@ -38,6 +38,14 @@ const I18N = {
 
     "aspect.label": "Hajmi",
 
+    "camera.label": "Kamera harakati",
+    "camera.held": "Statik",
+    "camera.pushIn": "Yaqinlashish",
+    "camera.pullOut": "Uzoqlashish",
+    "camera.panLeft": "Chapga burilish",
+    "camera.panRight": "O'ngga burilish",
+    "camera.reveal": "Yuqoridan ochilish",
+
     "step1.badge": "1",
     "step1.title": "Video yarating",
     "step1.subtitle": "Rasm yuklang yoki ko'rmoqchi bo'lgan manzarani so'zlar bilan tasvirlab bering",
@@ -272,6 +280,14 @@ const I18N = {
     "panelImage.empty.body": "Опишите выше и нажмите «Создать»",
 
     "aspect.label": "Размер",
+
+    "camera.label": "Движение камеры",
+    "camera.held": "Статично",
+    "camera.pushIn": "Приближение",
+    "camera.pullOut": "Отдаление",
+    "camera.panLeft": "Поворот влево",
+    "camera.panRight": "Поворот вправо",
+    "camera.reveal": "Раскрытие сверху",
 
     "step1.badge": "1",
     "step1.title": "Создайте видео",
@@ -508,6 +524,14 @@ const I18N = {
     "panelImage.empty.body": "Describe it above and tap Create",
 
     "aspect.label": "Size",
+
+    "camera.label": "Camera movement",
+    "camera.held": "Static",
+    "camera.pushIn": "Push in",
+    "camera.pullOut": "Pull back",
+    "camera.panLeft": "Pan left",
+    "camera.panRight": "Pan right",
+    "camera.reveal": "Reveal from above",
 
     "step1.title": "Create a video",
     "step1.subtitle": "Upload a photo or describe what you want to see, in your own words",
