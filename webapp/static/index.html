@@ -413,6 +413,30 @@
   </div>
 </div>
 
+<!-- Credit top-up: choose an amount, then a payment provider -->
+<div id="topup-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="topup-title">
+    <h3 id="topup-title" data-i18n="topup.title">Balansni to'ldirish</h3>
+    <p class="muted small" data-i18n="topup.subtitle">Miqdorni tanlang, so'ng to'lov usulini tanlang.</p>
+
+    <label class="field">
+      <span class="label" data-i18n="topup.amount">Miqdor (USD)</span>
+      <input id="topup-amount" type="number" inputmode="decimal" min="1" max="1000" step="1" class="big-input" value="10">
+    </label>
+
+    <div class="chip-row">
+      <span class="chip-label" data-i18n="topup.provider">To'lov usuli</span>
+      <div id="topup-provider-chips" class="chips"></div>
+    </div>
+
+    <p id="topup-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="topup-cancel" class="btn ghost" type="button" data-i18n="topup.cancel">Bekor qilish</button>
+      <button id="topup-submit" class="btn primary big" type="button" data-i18n="topup.button">To'ldirish</button>
+    </div>
+  </div>
+</div>
+
 <!-- Post-production: upscale / lip-sync / subtitles / background removal -->
 <div id="postprod-modal" class="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="postprod-title">

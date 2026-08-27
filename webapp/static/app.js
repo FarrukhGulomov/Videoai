@@ -30,6 +30,7 @@
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
     authMode: "login",
+    selectedTopupProvider: null,
   };
 
   // ---------------------------------------------------------------- utils
@@ -139,11 +140,13 @@
     wireCharacterModal();
     wireMotionTransfer();
     wireAuth();
+    wireTopup();
     wirePostprod();
     wireAvatar();
     checkHealth();
     await checkAuth();
     loadHistory();
+    handleTopupRedirect();
   }
 
   function wireLangPicker() {
@@ -159,6 +162,7 @@
       renderAvatarResChips();
       renderAuthBar();
       renderHealthBadge();
+      if (state.config && !$("topup-modal").hidden) renderTopupProviderChips();
       if (state.config) updatePostprodParamsIfOpen();
       if (state.config && !$("view-mcp").hidden) renderMcpView();
     });
@@ -253,9 +257,13 @@
     bar.hidden = false;
     if (state.auth.user) {
       const balanceText = state.auth.balance === null ? "" : money(state.auth.balance);
+      const hasProviders = !!(state.config && state.config.topup && state.config.topup.providers.length);
       bar.replaceChildren(
         el("span", { class: "email", text: state.auth.user.email }),
         balanceText ? el("span", { class: "balance", text: balanceText }) : null,
+        hasProviders ? el("button", {
+          class: "btn ghost small", type: "button", text: t("topup.button"), onclick: openTopupModal,
+        }) : null,
         el("button", { class: "btn ghost small", type: "button", text: t("auth.signout"), onclick: signOut }));
     } else {
       bar.replaceChildren(
@@ -356,6 +364,112 @@
     } catch { /* clearing client state either way */ }
     await checkAuth();
     loadHistory();
+  }
+
+  // --------------------------------------------------------------- top-up
+
+  const TOPUP_PROVIDERS = [
+    { id: "stripe", labelKey: "topup.provider.stripe" },
+    { id: "payme", labelKey: "topup.provider.payme" },
+    { id: "click", labelKey: "topup.provider.click" },
+  ];
+
+  function wireTopup() {
+    $("topup-cancel").addEventListener("click", closeTopupModal);
+    $("topup-submit").addEventListener("click", submitTopup);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("topup-modal").hidden) closeTopupModal();
+    });
+  }
+
+  function renderTopupProviderChips() {
+    const configured = (state.config && state.config.topup && state.config.topup.providers) || [];
+    const wrap = $("topup-provider-chips");
+    wrap.replaceChildren(...TOPUP_PROVIDERS
+      .filter((p) => configured.includes(p.id))
+      .map((p) => el("button", {
+        class: "chip" + (p.id === state.selectedTopupProvider ? " is-active" : ""),
+        type: "button", "data-provider": p.id,
+        onclick: () => selectTopupProvider(p.id),
+      }, t(p.labelKey))));
+  }
+
+  function selectTopupProvider(id) {
+    state.selectedTopupProvider = id;
+    for (const chip of document.querySelectorAll("#topup-provider-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.provider === id);
+    }
+  }
+
+  function openTopupModal() {
+    if (!requireSignedIn()) return;
+    const configured = (state.config && state.config.topup && state.config.topup.providers) || [];
+    if (!configured.length) {
+      toast(t("topup.noProviders"), true);
+      return;
+    }
+    state.selectedTopupProvider = configured.length === 1 ? configured[0] : null;
+    renderTopupProviderChips();
+    $("topup-error").hidden = true;
+    $("topup-modal").hidden = false;
+    $("topup-amount").focus();
+  }
+
+  function closeTopupModal() {
+    $("topup-modal").hidden = true;
+  }
+
+  async function submitTopup() {
+    const errEl = $("topup-error");
+    errEl.hidden = true;
+    const amount = Number($("topup-amount").value);
+    if (!Number.isFinite(amount) || amount < 1 || amount > 1000) {
+      errEl.textContent = t("topup.error.amount");
+      errEl.hidden = false;
+      return;
+    }
+    if (!state.selectedTopupProvider) {
+      errEl.textContent = t("topup.error.provider");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("topup-submit");
+    btn.disabled = true;
+    try {
+      const result = await api("/api/topup/create", {
+        method: "POST",
+        body: JSON.stringify({
+          amount_usd: amount,
+          provider: state.selectedTopupProvider,
+          origin: window.location.origin,
+        }),
+      });
+      toast(t("topup.redirecting"));
+      window.location.href = result.redirect_url;
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      btn.disabled = false;
+    }
+  }
+
+  /* Stripe/Payme/Click all redirect the browser back here after payment --
+     this project's own return_url, not a webhook (the webhook is what
+     actually credits the account, server-side, independently of whether
+     the browser ever makes it back). This is purely cosmetic: tell the
+     user what happened and refresh the balance in case the webhook beat
+     the redirect (usually does for Stripe, may not yet for Payme/Click). */
+  function handleTopupRedirect() {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("topup");
+    if (!result) return;
+    history.replaceState(null, "", window.location.pathname);
+    if (result === "success") {
+      toast(t("topup.result.success"));
+      checkAuth();
+    } else if (result === "cancelled") {
+      toast(t("topup.result.cancelled"), true);
+    }
   }
 
   // -------------------------------------------------------------- presets
