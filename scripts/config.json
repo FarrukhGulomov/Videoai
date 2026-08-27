@@ -21,6 +21,7 @@
     "final_take_alt_hailuo":    "fal-ai/minimax/hailuo-02/standard/image-to-video",
     "final_take_alt_pixverse":  "fal-ai/pixverse/v6/image-to-video",
     "avatar":     "fal-ai/bytedance/omnihuman/v1.5",
+    "motion_transfer": "fal-ai/kling-video/v2.6/standard/motion-control",
     "upscale":    "fal-ai/topaz/upscale/video",
     "lipsync":    "fal-ai/sync-lipsync/v3",
     "transcribe": "fal-ai/wizper",
@@ -31,6 +32,7 @@
     "still_per_image_usd":       0.15,
     "motion_test_per_second_usd": 0.03,
     "avatar_per_second_usd": 0.16,
+    "motion_transfer_per_second_usd": 0.07,
     "final_take_per_second_usd_by_model": {
       "fal-ai/kling-video/v3/standard/image-to-video": 0.126,
       "fal-ai/veo3.1/image-to-video": 0.15,
@@ -51,7 +53,8 @@
     "lipsync_per_second_usd": 0.1333,
     "transcription_per_second_usd": 0.0008,
     "bg_remove_per_second_usd": 0.0042,
-    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
+    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue).",
+    "_motion_transfer_note": "fal-ai/kling-video/v2.6/standard/motion-control's own pricing panel confirms 'Your request will cost $0.07 per second' -- billed by the SOURCE video's duration (probed via ffprobe, same as lipsync/avatar), not the output. This is the cost-effective 'standard' tier (good for portraits/simple animations, character_orientation='video' matches the reference video's framing, max ~30s); the pricier v3/pro tier (complex choreography) isn't wired here -- add it as a second model id the same way final_take's alt models work if that quality level is ever needed."
   },
 
   "defaults": {

@@ -25,6 +25,7 @@
     characters: [],
     selectedCharacterId: null,
     characterRefs: [],
+    motionImageDataUrl: null,
     avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
@@ -136,6 +137,7 @@
     wireImageUpload();
     wireImageOnly();
     wireCharacterModal();
+    wireMotionTransfer();
     wireAuth();
     wirePostprod();
     wireAvatar();
@@ -570,8 +572,10 @@
   function wireModePicker() {
     $("mode-image").addEventListener("click", () => enterMode("image"));
     $("mode-video").addEventListener("click", () => enterMode("video"));
+    $("mode-motion").addEventListener("click", () => enterMode("motion"));
     $("back-from-image").addEventListener("click", () => enterMode(null));
     $("back-from-video").addEventListener("click", () => enterMode(null));
+    $("back-from-motion").addEventListener("click", () => enterMode(null));
   }
 
   function enterMode(mode) {
@@ -579,6 +583,7 @@
     $("mode-picker").hidden = mode !== null;
     $("panel-image").hidden = mode !== "image";
     $("panel-video").hidden = mode !== "video";
+    $("panel-motion").hidden = mode !== "motion";
   }
 
   // --------------------------------------------------------- static wiring
@@ -1261,7 +1266,7 @@
 
     list.replaceChildren(...done.slice(0, 40).map((job) => {
       const url = (job.outputs || [])[0];
-      const isVideo = job.kind === "video" || job.kind === "postprod" || job.kind === "avatar";
+      const isVideo = job.kind === "video" || job.kind === "postprod" || job.kind === "avatar" || job.kind === "motion_transfer";
       const media = job.status === "error"
         ? el("div", { class: "card-body" },
             el("span", { class: "badge err", text: t("history.failed") }))
@@ -1270,6 +1275,7 @@
           : el("img", { src: url, alt: "", loading: "lazy" });
       const label = job.kind === "postprod" ? t("step4.enhance")
         : job.kind === "avatar" ? t("nav.avatar")
+        : job.kind === "motion_transfer" ? t("mode.motion.title")
         : job.kind === "video" ? t("history.badge.video") : t("history.badge.image");
 
       return el("div", { class: "card" },
@@ -1514,6 +1520,116 @@
       return;
     }
     setPanel($("avatar-results"),
+      el("div", { class: "card" },
+        el("video", { src: url, controls: "", playsinline: "", preload: "metadata" }),
+        el("div", { class: "card-body" },
+          el("span", { class: "badge ok", text: money(job.cost_usd || 0) }),
+          el("span", { class: "spacer" }),
+          el("a", { class: "dl", href: url, download: "", target: "_blank",
+                    rel: "noopener", text: t("step4.download") }))));
+  }
+
+  // ----------------------------------- motion transfer (video's motion -> a photo)
+
+  /* fal-ai/kling-video/v2.6/standard/motion-control -- applies a reference
+     video's movement to a static character photo (see
+     scripts/config.json's _motion_transfer_note). Same quote-then-confirm
+     shape as avatar: the video can be large, so it's a URL field rather
+     than an upload (unlike the character photo, which is small enough to
+     go as a data: URI the same way every other photo upload in this file
+     does). */
+  function wireMotionTransfer() {
+    $("motion-image-upload").addEventListener("change", handleMotionImageUpload);
+    $("btn-motion").addEventListener("click", quoteMotionTransfer);
+  }
+
+  function handleMotionImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast(t("toast.notAnImage"), true);
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast(t("toast.imageTooLarge"), true);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.motionImageDataUrl = reader.result;
+      $("motion-image-filename").textContent = file.name;
+    };
+    reader.onerror = () => toast(t("common.connectError"), true);
+    reader.readAsDataURL(file);
+  }
+
+  async function quoteMotionTransfer() {
+    if (!requireSignedIn()) return;
+    const errEl = $("motion-error");
+    errEl.hidden = true;
+    const imageUrl = state.motionImageDataUrl;
+    const videoUrl = $("motion-video-url").value.trim();
+    if (!imageUrl || !videoUrl) {
+      errEl.textContent = t("motion.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const prompt = $("motion-prompt").value.trim();
+    let quote;
+    try {
+      quote = await api("/api/motion-transfer/quote", {
+        method: "POST",
+        body: JSON.stringify({ image_url: imageUrl, video_url: videoUrl }),
+      });
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      return;
+    }
+    $("confirm-cost").textContent = money(quote.cost_usd);
+    $("confirm-detail").textContent = "";
+    openConfirm(() => runMotionTransfer(imageUrl, videoUrl, prompt, quote));
+  }
+
+  async function runMotionTransfer(imageUrl, videoUrl, prompt, quote) {
+    const btn = $("btn-motion");
+    btn.disabled = true;
+    setPanel($("motion-results"), workingPanel());
+    try {
+      const body = { image_url: imageUrl, video_url: videoUrl, approved_cost: quote.cost_usd };
+      if (prompt) body.prompt = prompt;
+      const job = await api("/api/motion-transfer/run", { method: "POST", body: JSON.stringify(body) });
+      poll(job.id,
+        (done) => {
+          btn.disabled = false;
+          if (done.status === "error") {
+            setPanel($("motion-results"), errorPanel(translateApiError(done.error),
+              () => runMotionTransfer(imageUrl, videoUrl, prompt, quote)));
+            return;
+          }
+          renderMotionResult(done);
+          loadHistory();
+          checkAuth();
+          toast(t("toast.videoReady"));
+        },
+        () => setPanel($("motion-results"), workingPanel()));
+    } catch (err) {
+      btn.disabled = false;
+      setPanel($("motion-results"), errorPanel(err.message,
+        () => runMotionTransfer(imageUrl, videoUrl, prompt, quote)));
+    }
+  }
+
+  function renderMotionResult(job) {
+    const url = (job.outputs || [])[0];
+    if (!url) {
+      setPanel($("motion-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noVideo") }))));
+      return;
+    }
+    setPanel($("motion-results"),
       el("div", { class: "card" },
         el("video", { src: url, controls: "", playsinline: "", preload: "metadata" }),
         el("div", { class: "card-body" },

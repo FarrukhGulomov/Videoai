@@ -51,6 +51,11 @@
         <strong data-i18n="mode.video.title">Video yaratish</strong>
         <span class="muted" data-i18n="mode.video.subtitle">Suratni jonlantiring</span>
       </button>
+      <button id="mode-motion" class="mode-card" type="button">
+        <span class="mode-icon" aria-hidden="true">🕺</span>
+        <strong data-i18n="mode.motion.title">Harakatni ko'chirish</strong>
+        <span class="muted" data-i18n="mode.motion.subtitle">Video harakatini rasmingizga bering</span>
+      </button>
     </div>
 
     <!-- ---- Image-only panel ---- -->
@@ -154,6 +159,47 @@
         <div class="empty">
           <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
           <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- Motion transfer panel ---- -->
+    <section id="panel-motion" class="step" hidden aria-labelledby="pm-title">
+      <button class="back-btn" id="back-from-motion" type="button">
+        <span aria-hidden="true">←</span> <span data-i18n="mode.back">Orqaga</span>
+      </button>
+      <div class="step-head">
+        <div>
+          <h2 id="pm-title" data-i18n="mode.motion.title">Harakatni ko'chirish</h2>
+          <p class="muted" data-i18n="motion.subtitle">Namuna videodagi harakatni rasmingizga bering — masalan, raqs yoki imo-ishoralarni.</p>
+        </div>
+      </div>
+
+      <div class="upload-row">
+        <label class="btn ghost upload-btn">
+          <input id="motion-image-upload" type="file" accept="image/*" hidden>
+          <span data-i18n="motion.uploadPhoto">Rasm yuklash</span>
+        </label>
+        <span id="motion-image-filename" class="muted small"></span>
+      </div>
+
+      <label class="field">
+        <span class="label" data-i18n="motion.videoUrl">Namuna video havolasi</span>
+        <input id="motion-video-url" type="url" class="big-input" data-i18n-placeholder="motion.videoUrl.placeholder">
+      </label>
+
+      <label class="field">
+        <span class="label" data-i18n="motion.prompt">Qo'shimcha yo'riqnoma (ixtiyoriy)</span>
+        <textarea id="motion-prompt" rows="2" class="big-input" data-i18n-placeholder="motion.prompt.placeholder"></textarea>
+      </label>
+
+      <button id="btn-motion" class="btn primary big" type="button" data-i18n="motion.button">Narxni bilish</button>
+      <p id="motion-error" class="muted small err" hidden></p>
+
+      <div id="motion-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong data-i18n="motion.empty.title">Hali natija yo'q</strong></p>
+          <p class="muted" data-i18n="motion.empty.body">Rasm va video havolasini kiritib boshlang</p>
         </div>
       </div>
     </section>

@@ -769,6 +769,51 @@ def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost,
         _persist(job)
 
 
+def _run_motion_transfer_job(job_id, image_url, video_url, prompt, wholesale_cost, cost, charge_user_id):
+    """Applies a reference video's motion to a static character image
+    (fal-ai/kling-video/v2.6/standard/motion-control -- see
+    scripts/config.json's _motion_transfer_note). Same discipline as every
+    other paid worker here: `cost` was computed once up front from the
+    source video's real probed duration and is threaded through unchanged,
+    never recomputed."""
+    _update(job_id, status="running", stage="Sending to fal.ai…")
+    try:
+        model = CONFIG["models"]["motion_transfer"]
+        payload = {
+            "image_url": image_url,
+            "video_url": video_url,
+            # Orientation follows the reference video's own framing/motion
+            # rather than the still image's camera -- the point of this
+            # feature is reproducing that video's motion, not its own.
+            "character_orientation": "video",
+        }
+        if prompt:
+            payload["prompt"] = prompt
+
+        _update(job_id, stage="Transferring the motion — this can take a few minutes…")
+        result = factory.fal_run(model, payload, max_wait=1800)
+        url = factory.first_url(result, "video", "videos")
+
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": "motion_transfer", "model": model,
+            "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success", "output_url": url,
+            "request_id": result.get("_request_id"),
+        })
+        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} motion_transfer")
+        job = _update(job_id, status="done", stage="Done",
+                      outputs=[url] if url else [],
+                      request_id=result.get("_request_id"), credit_deducted=deducted)
+        _persist(job)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
+        factory.log_generation({
+            "scene_id": f"web:{job_id}", "op": "motion_transfer",
+            "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
+        })
+        job = _update(job_id, status="error", stage="Failed",
+                      error=friendly_error(exc), error_raw=str(exc)[:1500])
+        _persist(job)
+
+
 def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost, charge_user_id):
     """Turns a photo + voice track into a talking-head video (OmniHuman).
     `cost` is computed once up front (by _generate_avatar, from the audio's
@@ -960,6 +1005,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._quote_avatar(body)
             if path == "/api/avatar/run":
                 return self._generate_avatar(body)
+            if path == "/api/motion-transfer/quote":
+                return self._quote_motion_transfer(body)
+            if path == "/api/motion-transfer/run":
+                return self._generate_motion_transfer(body)
             return self._send(404, {"error": "Unknown endpoint."})
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
@@ -1449,6 +1498,57 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(202, job)
 
     # -- talking avatar (image + voice track -> new video) ---------------
+
+    # -- motion transfer (reference video's motion -> a static photo) ----
+
+    def _quote_motion_transfer(self, body):
+        """Priced off the reference video's own probed length, same
+        pattern as avatar/lipsync."""
+        image_url = _require_public_url(body.get("image_url"), "Character photo", allow_data=True)
+        video_url = _require_public_url(body.get("video_url"), "Reference video")
+        rate = _retail_rate(CONFIG["rates"]["motion_transfer_per_second_usd"])
+        try:
+            duration = factory.probe_duration(video_url)
+        except SystemExit:
+            raise ValueError("Could not read that video's duration — is the URL still reachable?") from None
+        cost = round(rate * duration, 4)
+        return self._send(200, {
+            "duration_seconds": round(duration, 2), "rate": rate, "cost_usd": cost,
+            "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
+        })
+
+    def _generate_motion_transfer(self, body):
+        image_url = _require_public_url(body.get("image_url"), "Character photo", allow_data=True)
+        video_url = _require_public_url(body.get("video_url"), "Reference video")
+        prompt = (body.get("prompt") or "").strip()
+
+        wholesale_rate = CONFIG["rates"]["motion_transfer_per_second_usd"]
+        try:
+            duration = factory.probe_duration(video_url)
+        except SystemExit:
+            raise ValueError("Could not read that video's duration — is the URL still reachable?") from None
+        rate = _retail_rate(wholesale_rate)
+        cost = round(rate * duration, 4)
+        wholesale_cost = round(wholesale_rate * duration, 4)
+
+        approved = body.get("approved_cost")
+        if approved is None:
+            raise ValueError(f"This costs ${cost}. Confirm the cost to continue.")
+        if abs(float(approved) - cost) > 0.005:
+            raise ValueError(
+                f"The price changed to ${cost} since it was quoted. "
+                "Nothing was charged — re-confirm to continue."
+            )
+
+        owner, charge_user_id = self._require_funded_user(cost)
+
+        job = _new_job("motion_transfer", owner, cost_usd=cost, duration_seconds=round(duration, 2))
+        threading.Thread(
+            target=_run_motion_transfer_job,
+            args=(job["id"], image_url, video_url, prompt, wholesale_cost, cost, charge_user_id),
+            daemon=True,
+        ).start()
+        return self._send(202, job)
 
     def _quote_avatar(self, body):
         """Price a talking-avatar generation without spending anything.
