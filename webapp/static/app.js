@@ -731,6 +731,7 @@
     $("tab-create").addEventListener("click", () => switchView("create"));
     $("tab-avatar").addEventListener("click", () => switchView("avatar"));
     $("tab-history").addEventListener("click", () => switchView("history"));
+    $("tab-gallery").addEventListener("click", () => switchView("gallery"));
     $("tab-mcp").addEventListener("click", () => switchView("mcp"));
   }
 
@@ -738,12 +739,15 @@
     $("view-create").hidden = which !== "create";
     $("view-avatar").hidden = which !== "avatar";
     $("view-history").hidden = which !== "history";
+    $("view-gallery").hidden = which !== "gallery";
     $("view-mcp").hidden = which !== "mcp";
     $("tab-create").classList.toggle("is-active", which === "create");
     $("tab-avatar").classList.toggle("is-active", which === "avatar");
     $("tab-history").classList.toggle("is-active", which === "history");
+    $("tab-gallery").classList.toggle("is-active", which === "gallery");
     $("tab-mcp").classList.toggle("is-active", which === "mcp");
     if (which === "history") loadHistory();
+    if (which === "gallery") loadGallery();
     if (which === "mcp") renderMcpView();
   }
 
@@ -1288,10 +1292,68 @@
                                             onclick: () => openPostprodModal(url) }) : null,
           url ? el("a", { class: "dl", href: url, download: "", target: "_blank",
                           rel: "noopener", text: t("step4.download") }) : null),
+        job.status === "done" && url
+          ? el("div", { class: "card-body" },
+              el("span", { class: "spacer" }),
+              el("button", {
+                class: "btn ghost small" + (job.public ? " is-active" : ""), type: "button",
+                text: t(job.public ? "gallery.unpublish" : "gallery.publish"),
+                onclick: (e) => togglePublish(job, e.currentTarget),
+              }))
+          : null,
         job.status === "error"
           ? el("div", { class: "card-body" },
               el("span", { class: "muted small", text: translateApiError(job.error) || t("history.failed") }))
           : null);
+    }));
+  }
+
+  async function togglePublish(job, btn) {
+    btn.disabled = true;
+    try {
+      const result = await api(`/api/jobs/${job.id}/publish`, {
+        method: "POST",
+        body: JSON.stringify({ public: !job.public }),
+      });
+      job.public = result.public;
+      btn.textContent = t(job.public ? "gallery.unpublish" : "gallery.publish");
+      btn.classList.toggle("is-active", job.public);
+      toast(t(job.public ? "gallery.published" : "gallery.unpublished"));
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // -------------------------------------------------------------- gallery
+
+  /* Public, opt-in only -- a job shows up here exactly because its owner
+     clicked "Publish" on it in their own history (see togglePublish). No
+     sign-in required to browse: this is public content by the owner's own
+     choice, same as any other public feed. /api/gallery strips owner_id
+     and cost_usd server-side before this ever sees a row. */
+  async function loadGallery() {
+    const list = $("gallery-list");
+    let data;
+    try {
+      data = await api("/api/gallery");
+    } catch {
+      setPanel(list, errorPanel(t("history.failed"), loadGallery));
+      return;
+    }
+    const jobs = data.jobs || [];
+    if (!jobs.length) {
+      setPanel(list, emptyPanel("gallery.empty.title", "gallery.empty.body"));
+      return;
+    }
+    list.replaceChildren(...jobs.map((job) => {
+      const url = (job.outputs || [])[0];
+      const isVideo = job.kind !== "image";
+      const media = isVideo
+        ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
+        : el("img", { src: url, alt: "", loading: "lazy" });
+      return el("div", { class: "card" }, media);
     }));
   }
 

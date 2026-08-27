@@ -964,6 +964,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not job or job.get("owner_id") != owner:
                     return self._send(404, {"error": "No such job."})
                 return self._send(200, job)
+            if path == "/api/gallery":
+                return self._list_gallery()
             if path.startswith("/media/"):
                 return self._serve_media(path[len("/media/"):])
             if path == "/mcp/server.py":
@@ -1009,6 +1011,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._quote_motion_transfer(body)
             if path == "/api/motion-transfer/run":
                 return self._generate_motion_transfer(body)
+            if path.startswith("/api/jobs/") and path.endswith("/publish"):
+                job_id = path[len("/api/jobs/"):-len("/publish")]
+                return self._toggle_publish(job_id, body)
             return self._send(404, {"error": "Unknown endpoint."})
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
@@ -1232,6 +1237,40 @@ class Handler(BaseHTTPRequestHandler):
         except db.SupabaseError as exc:
             raise ValueError(str(exc)) from None
         return self._send(200, {"ok": True})
+
+    # -- gallery (opt-in public sharing of a user's own finished jobs) ---
+
+    def _list_gallery(self):
+        """No auth required -- these are the jobs their own owners
+        explicitly opted into showing (see _toggle_publish), so viewing
+        them is the whole point. Only public-safe fields go out: no
+        owner_id, no cost_usd, nothing that identifies who made it or what
+        it cost them."""
+        with _jobs_lock:
+            public_jobs = sorted(
+                (j for j in _jobs.values() if j.get("public") and j.get("status") == "done" and j.get("outputs")),
+                key=lambda j: j["created_at"], reverse=True,
+            )
+        shown = [{"id": j["id"], "kind": j["kind"], "outputs": j["outputs"], "created_at": j["created_at"]}
+                 for j in public_jobs[:60]]
+        return self._send(200, {"jobs": shown})
+
+    def _toggle_publish(self, job_id, body):
+        """Only the job's own owner can publish or un-publish it -- same
+        ownership check /api/jobs/<id> already does for reading it."""
+        owner = self._owner_id()
+        if owner is None:
+            raise ValueError("Sign in to share a video.")
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if not job or job.get("owner_id") != owner:
+                raise ValueError("No such job.")
+            if job.get("status") != "done" or not job.get("outputs"):
+                raise ValueError("Only a finished generation can be shared.")
+            job["public"] = bool(body.get("public"))
+            snapshot = dict(job)
+        _persist(snapshot)
+        return self._send(200, {"public": snapshot["public"]})
 
     def _auth_signup(self, body):
         if not db.configured():
