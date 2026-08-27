@@ -334,6 +334,91 @@ PRESETS = [
         ),
         "seconds": 6,
     },
+    {
+        "id": "ugc_testimonial",
+        "name": "UGC testimonial",
+        "blurb": "Handheld, natural, like a phone selfie video. Great for reviews.",
+        "motion": (
+            "Camera holds with visible handheld sway, natural amateur framing, as if "
+            "held at arm's length. The person speaks naturally with small head "
+            "movements and blinks. Available light, slight lens softness, no "
+            "professional grade, no camera stabilization. " + IDENTITY_LOCK
+        ),
+        "seconds": 8,
+    },
+    {
+        "id": "real_estate_walkthrough",
+        "name": "Interior walkthrough",
+        "blurb": "Slow glide forward through a room. Great for real estate.",
+        "motion": (
+            "Camera glides forward smoothly at a slow walking pace through the "
+            "space, staying at eye level, ending on a wider view of the room. "
+            "Natural daylight through windows, wide-angle lens, clean neutral "
+            "palette, no camera shake, no on-screen text."
+        ),
+        "seconds": 8,
+    },
+    {
+        "id": "food_closeup",
+        "name": "Food close-up",
+        "blurb": "Macro push-in with steam or texture detail. Great for restaurants.",
+        "motion": (
+            "Camera pushes in slowly, 20% over the full duration, on a close macro "
+            "detail of the food's texture. Steam or a light garnish drifts "
+            "naturally. Soft overhead light, shallow depth of field, 100mm macro "
+            "lens, fine film grain, warm palette. No camera shake, no lens flare, "
+            "no on-screen text."
+        ),
+        "seconds": 6,
+    },
+    {
+        "id": "fashion_turn",
+        "name": "Fashion lookbook",
+        "blurb": "The subject turns to reveal the outfit from a new angle.",
+        "motion": (
+            "The subject turns 30 degrees toward camera and settles, revealing the "
+            "outfit from a three-quarter angle. Camera holds steady. Soft diffused "
+            "studio light, 50mm lens, clean neutral backdrop, fine film grain. "
+            + IDENTITY_LOCK
+        ),
+        "seconds": 6,
+    },
+    {
+        "id": "tech_unboxing",
+        "name": "Product unboxing",
+        "blurb": "Overhead reveal of a product on a clean surface.",
+        "motion": (
+            "Camera holds a steady overhead angle looking straight down. Hands "
+            "enter frame naturally and open the packaging, revealing the product "
+            "inside. Soft even light, no harsh shadows, 35mm lens, clean neutral "
+            "surface. No camera shake, no on-screen text."
+        ),
+        "seconds": 8,
+    },
+    {
+        "id": "travel_landscape",
+        "name": "Travel / landscape",
+        "blurb": "A wide, slow drift across a scenic view.",
+        "motion": (
+            "Camera drifts slowly sideways, 15% over the full duration, across the "
+            "wide landscape. Clouds and light shift gently; nothing moves "
+            "abruptly. Golden-hour directional light, wide lens, fine film grain, "
+            "natural palette. No camera shake, no on-screen text."
+        ),
+        "seconds": 8,
+    },
+    {
+        "id": "fitness_action",
+        "name": "Fitness / gym",
+        "blurb": "Continuous real-time movement through one exercise rep.",
+        "motion": (
+            "Fast-paced real-time motion through a single exercise repetition, not "
+            "slow motion, resolving on a settled stance. Camera remains static at "
+            "a low three-quarter angle. Bright even gym lighting, 35mm lens, "
+            "motion blur on moving limbs only, face stays sharp. " + IDENTITY_LOCK
+        ),
+        "seconds": 6,
+    },
 ]
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3"]
