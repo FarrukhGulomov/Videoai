@@ -22,6 +22,9 @@
     selectedSeconds: null,
     selectedModel: null,
     imageOnlyRefs: [],
+    characters: [],
+    selectedCharacterId: null,
+    characterRefs: [],
     avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
@@ -132,6 +135,7 @@
     wireStaticControls();
     wireImageUpload();
     wireImageOnly();
+    wireCharacterModal();
     wireAuth();
     wirePostprod();
     wireAvatar();
@@ -235,6 +239,7 @@
       state.auth = { enabled: false, user: null, balance: null };
     }
     renderAuthBar();
+    await loadCharacters();
   }
 
   function renderAuthBar() {
@@ -766,6 +771,161 @@
     state.polls.set(jobId, timer);
   }
 
+  // ----------------------------------------------------------- characters
+
+  /* A character is a saved identity (name + description + up to 4
+     reference photos) reused across shots -- feeds the same refs/lock-text
+     mechanism scripts/factory.py's CLI pipeline has always used
+     (CHARACTER_LOCK / IDENTITY_LOCK in templates.json), now reachable from
+     the web UI. Requires a real signed-in user: characters live in
+     Supabase's `characters` table (see 01-schema.sql /
+     03-characters-per-user.sql), which single-tenant/no-auth mode has no
+     access to at all -- the section stays hidden rather than showing a
+     feature that can't work. */
+  async function loadCharacters() {
+    if (!state.auth.user) {
+      state.characters = [];
+      state.selectedCharacterId = null;
+      renderCharacterChips();
+      return;
+    }
+    try {
+      const data = await api("/api/characters");
+      state.characters = data.characters || [];
+    } catch {
+      state.characters = [];
+    }
+    if (!state.characters.some((c) => c.id === state.selectedCharacterId)) {
+      state.selectedCharacterId = null;
+    }
+    renderCharacterChips();
+  }
+
+  function renderCharacterChips() {
+    const section = $("character-section");
+    if (!state.auth.user) {
+      section.hidden = true;
+      return;
+    }
+    section.hidden = false;
+    const wrap = $("character-chips");
+    wrap.replaceChildren(
+      ...state.characters.map((c) =>
+        el("button", {
+          class: "chip" + (c.id === state.selectedCharacterId ? " is-active" : ""),
+          type: "button", "data-id": c.id,
+          onclick: () => selectCharacter(c.id),
+          text: c.name,
+        })),
+      el("button", {
+        class: "chip add-character", type: "button",
+        onclick: openCharacterModal,
+        text: `+ ${t("character.addNew")}`,
+      }));
+  }
+
+  function selectCharacter(id) {
+    state.selectedCharacterId = state.selectedCharacterId === id ? null : id;
+    for (const chip of document.querySelectorAll("#character-chips .chip:not(.add-character)")) {
+      chip.classList.toggle("is-active", chip.dataset.id === state.selectedCharacterId);
+    }
+  }
+
+  function selectedCharacter() {
+    return state.characters.find((c) => c.id === state.selectedCharacterId) || null;
+  }
+
+  function openCharacterModal() {
+    state.characterRefs = [];
+    $("character-name").value = "";
+    $("character-lock-text").value = "";
+    $("character-ref-previews").replaceChildren();
+    $("character-error").hidden = true;
+    $("character-modal").hidden = false;
+    $("character-name").focus();
+  }
+
+  function closeCharacterModal() {
+    $("character-modal").hidden = true;
+  }
+
+  function renderCharacterRefPreviews() {
+    $("character-ref-previews").replaceChildren(...state.characterRefs.map((dataUrl, i) =>
+      el("div", { class: "character-ref-thumb" },
+        el("img", { src: dataUrl, alt: "" }),
+        el("button", {
+          type: "button", text: "×", "aria-label": t("character.removeRef"),
+          onclick: () => {
+            state.characterRefs.splice(i, 1);
+            renderCharacterRefPreviews();
+          },
+        }))));
+  }
+
+  function handleCharacterRefUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    for (const file of files) {
+      if (state.characterRefs.length >= 4) {
+        toast(t("character.tooManyRefs"), true);
+        break;
+      }
+      if (!file.type.startsWith("image/")) {
+        toast(t("toast.notAnImage"), true);
+        continue;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        toast(t("toast.imageTooLarge"), true);
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        state.characterRefs.push(reader.result);
+        renderCharacterRefPreviews();
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  async function saveCharacter() {
+    const errEl = $("character-error");
+    errEl.hidden = true;
+    const name = $("character-name").value.trim();
+    const lockText = $("character-lock-text").value.trim();
+    if (!name || !lockText) {
+      errEl.textContent = t("character.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("character-save");
+    btn.disabled = true;
+    try {
+      const result = await api("/api/characters", {
+        method: "POST",
+        body: JSON.stringify({ name, lock_text: lockText, reference_urls: state.characterRefs }),
+      });
+      state.characters.unshift(result.character);
+      state.selectedCharacterId = result.character.id;
+      renderCharacterChips();
+      closeCharacterModal();
+      toast(t("character.saved"));
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function wireCharacterModal() {
+    $("character-ref-upload").addEventListener("change", handleCharacterRefUpload);
+    $("character-cancel").addEventListener("click", closeCharacterModal);
+    $("character-save").addEventListener("click", saveCharacter);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("character-modal").hidden) closeCharacterModal();
+    });
+  }
+
   // -------------------------------------------------------------- images
 
   /* The video panel's single action button: generate a starting frame
@@ -783,12 +943,21 @@
   }
 
   async function generateImagesForVideo() {
-    const prompt = $("image-prompt").value.trim();
+    let prompt = $("image-prompt").value.trim();
     if (!prompt) {
       toast(t("toast.describeFirst"), true);
       $("image-prompt").focus();
       return;
     }
+
+    // A selected character's lock-text (what must stay the same -- face,
+    // wardrobe, distinguishing features) goes in front of the shot's own
+    // description, and its reference photos ride along as refs so the
+    // still-image model has something to match, not just words -- same
+    // refs/still_edit path an ad-hoc upload already used.
+    const character = selectedCharacter();
+    const refs = character ? character.reference_urls : [];
+    if (character) prompt = `${character.lock_text}. ${prompt}`;
 
     state.imageWasUploaded = false;
     const btn = $("btn-video-start");
@@ -799,7 +968,7 @@
     try {
       const job = await api("/api/generate/image", {
         method: "POST",
-        body: JSON.stringify({ prompt, aspect: selectedAspectRatio("aspect-select") }),
+        body: JSON.stringify({ prompt, aspect: selectedAspectRatio("aspect-select"), refs }),
       });
       poll(job.id,
         (done) => {

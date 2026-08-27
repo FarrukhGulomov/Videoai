@@ -812,6 +812,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._health_payload())
             if path == "/api/auth/me":
                 return self._auth_me()
+            if path == "/api/characters":
+                return self._list_characters()
             if path == "/api/jobs":
                 owner = self._owner_id()
                 if owner is None:
@@ -855,6 +857,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._auth_logout()
             if path == "/api/auth/oauth-callback":
                 return self._auth_oauth_callback(body)
+            if path == "/api/characters":
+                return self._create_character(body)
+            if path == "/api/characters/delete":
+                return self._delete_character(body)
             if path == "/api/quote":
                 return self._quote(body)
             if path == "/api/generate/image":
@@ -1033,6 +1039,65 @@ class Handler(BaseHTTPRequestHandler):
             "user": {"email": user["email"], "id": user["id"]},
             "balance_usd": balance,
         })
+
+    # -- characters (identity locks, reusable across shots) ---------------
+
+    def _require_current_user(self):
+        """Every characters endpoint needs a real signed-in user -- the
+        same requirement generation itself now has (see
+        _require_funded_user). Characters live in Supabase's `characters`
+        table via PostgREST, RLS-scoped to owner_id = auth.uid(), so the
+        caller's own access token is all that's needed here; no service
+        role key involved, same as get_balance()."""
+        user = _current_user(self)
+        if not user:
+            raise ValueError("Sign in to manage characters.")
+        return user
+
+    def _list_characters(self):
+        user = self._require_current_user()
+        try:
+            rows = db.list_characters(user["id"], user["access_token"])
+        except db.SupabaseError as exc:
+            raise ValueError(str(exc)) from None
+        return self._send(200, {"characters": rows})
+
+    def _create_character(self, body):
+        user = self._require_current_user()
+        name = (body.get("name") or "").strip()
+        lock_text = (body.get("lock_text") or "").strip()
+        if not name:
+            raise ValueError("Give this character a name.")
+        if len(name) > 80:
+            raise ValueError("Keep the name under 80 characters.")
+        if not lock_text:
+            raise ValueError("Describe what should stay the same in every shot.")
+        if len(lock_text) > 2000:
+            raise ValueError("Keep the description under 2000 characters.")
+        refs = [_require_public_url(r, "Reference image", allow_data=True)
+                for r in (body.get("reference_urls") or [])]
+        if len(refs) > 4:
+            raise ValueError("Up to 4 reference images per character.")
+        notes = (body.get("notes") or "").strip() or None
+        try:
+            row = db.create_character(user["id"], user["access_token"], name, lock_text, refs, notes)
+        except db.SupabaseError as exc:
+            message = str(exc)
+            if "duplicate key" in message or "already exists" in message:
+                raise ValueError(f'You already have a character named "{name}".') from None
+            raise ValueError(message) from None
+        return self._send(200, {"character": row})
+
+    def _delete_character(self, body):
+        user = self._require_current_user()
+        char_id = (body.get("id") or "").strip()
+        if not char_id:
+            raise ValueError("Missing character id.")
+        try:
+            db.delete_character(user["id"], user["access_token"], char_id)
+        except db.SupabaseError as exc:
+            raise ValueError(str(exc)) from None
+        return self._send(200, {"ok": True})
 
     def _auth_signup(self, body):
         if not db.configured():

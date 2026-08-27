@@ -399,6 +399,48 @@ textarea:focus, select:focus, input:focus {
 .chip:hover { border-color: var(--line-strong); }
 .chip.is-active { background: var(--accent-grad); border-color: transparent; color: #fff; box-shadow: 0 3px 10px rgba(91, 63, 242, 0.25); }
 
+/* ---------- characters ---------- */
+
+.chip.add-character {
+  background: transparent;
+  border-style: dashed;
+  color: var(--muted);
+  font-weight: 720;
+}
+.chip.add-character:hover { color: var(--text); border-color: var(--line-strong); }
+
+.character-ref-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.character-ref-thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1.5px solid var(--line);
+}
+.character-ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.character-ref-thumb button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(10, 8, 20, .68);
+  color: #fff;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
 /* ---------- image upload ---------- */
 
 .upload-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }

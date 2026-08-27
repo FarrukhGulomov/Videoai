@@ -139,3 +139,46 @@ def record_spend(user_id, delta_usd, note=None):
     upsert_headers = dict(headers, Prefer="resolution=merge-duplicates")
     _request("POST", upsert_url, upsert_headers, {"user_id": user_id, "balance_usd": new_balance})
     return new_balance
+
+
+# ---------------------------------------------------------- characters
+
+def list_characters(user_id, access_token):
+    """List the caller's own characters, RLS-scoped by their own token --
+    same pattern as get_balance(): the 'own characters' policy in
+    02-multiuser-schema.sql is what makes this safe with a user token
+    instead of the service role key."""
+    url = (f"{_base_url()}/rest/v1/characters?owner_id=eq.{user_id}"
+           "&select=id,name,lock_text,reference_urls,notes,created_at"
+           "&order=created_at.desc")
+    headers = {"apikey": _anon_key(), "Authorization": f"Bearer {access_token}"}
+    return _request("GET", url, headers)
+
+
+def create_character(user_id, access_token, name, lock_text, reference_urls, notes=None):
+    """Insert under the caller's own token -- the 'own characters' RLS
+    policy's WITH CHECK requires owner_id = auth.uid(), so this can't
+    create a row for anyone else even if the caller tried to pass a
+    different user_id."""
+    url = f"{_base_url()}/rest/v1/characters"
+    headers = {
+        "apikey": _anon_key(),
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    body = {
+        "owner_id": user_id, "name": name, "lock_text": lock_text,
+        "reference_urls": reference_urls, "notes": notes,
+    }
+    result = _request("POST", url, headers, body)
+    return result[0] if isinstance(result, list) and result else result
+
+
+def delete_character(user_id, access_token, character_id):
+    """owner_id=eq.{user_id} in the filter (on top of RLS) means this is a
+    no-op, not an error, against a character that exists but belongs to
+    someone else -- PostgREST just matches zero rows."""
+    url = f"{_base_url()}/rest/v1/characters?id=eq.{character_id}&owner_id=eq.{user_id}"
+    headers = {"apikey": _anon_key(), "Authorization": f"Bearer {access_token}"}
+    _request("DELETE", url, headers)

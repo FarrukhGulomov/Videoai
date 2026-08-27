@@ -115,6 +115,11 @@
 
       <div class="or-divider"><span data-i18n="step1.or">yoki tasvirlab bering</span></div>
 
+      <div id="character-section" class="chip-row" hidden>
+        <span class="chip-label" data-i18n="character.label">Personaj (ixtiyoriy)</span>
+        <div id="character-chips" class="chips"></div>
+      </div>
+
       <span class="chip-label" data-i18n="step1.presets">Tayyor g'oyalar</span>
       <div id="presets" class="presets" role="group" aria-label="Presets"></div>
 
@@ -320,6 +325,37 @@
       <button id="auth-submit" class="btn primary big" type="button" data-i18n="auth.signin">Kirish</button>
     </div>
     <p class="auth-modal-footnote muted small" data-i18n="auth.footnote">Ma'lumotlaringiz shifrlangan holda saqlanadi.</p>
+  </div>
+</div>
+
+<!-- New character (saved identity reused across shots) -->
+<div id="character-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="character-modal-title">
+    <h3 id="character-modal-title" data-i18n="character.modal.title">Yangi personaj</h3>
+    <p class="muted small" data-i18n="character.modal.subtitle">Bu personaj barcha kadrlaringizda bir xil ko'rinadi.</p>
+
+    <label class="field">
+      <span class="label" data-i18n="character.name">Nomi</span>
+      <input id="character-name" type="text" class="big-input" maxlength="80">
+    </label>
+    <label class="field">
+      <span class="label" data-i18n="character.lockText">Tavsif (yuzi, kiyimi, o'ziga xosligi)</span>
+      <textarea id="character-lock-text" rows="3" class="big-input" data-i18n-placeholder="character.lockText.placeholder"></textarea>
+    </label>
+
+    <div class="upload-row">
+      <label class="btn ghost upload-btn">
+        <input id="character-ref-upload" type="file" accept="image/*" multiple hidden>
+        <span data-i18n="character.uploadRefs">Namuna rasmlar (1-4 ta)</span>
+      </label>
+    </div>
+    <div id="character-ref-previews" class="character-ref-previews"></div>
+
+    <p id="character-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="character-cancel" class="btn ghost" type="button" data-i18n="character.cancel">Bekor qilish</button>
+      <button id="character-save" class="btn primary big" type="button" data-i18n="character.save">Saqlash</button>
+    </div>
   </div>
 </div>
 
