@@ -38,12 +38,14 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import payments
 import supabase_client as db
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 WORK = ROOT / "work"
 JOBS_FILE = WORK / "webapp_jobs.jsonl"
+TOPUPS_FILE = WORK / "webapp_topups.jsonl"
 
 MAX_BODY_BYTES = 2 * 1024 * 1024  # prompts and settings only; media goes by URL
 
@@ -538,6 +540,337 @@ def _update(job_id, **fields):
     return None
 
 
+# ------------------------------------------------------------- topup storage
+#
+# Same shape and persistence pattern as _jobs/JOBS_FILE above, kept
+# entirely separate: a topup tracks money coming IN from a payment
+# provider, a job tracks a paid generation spending it back out, and
+# conflating the two stores would make both harder to reason about for
+# no real benefit.
+
+_topups = {}
+_topups_lock = threading.Lock()
+
+
+def _persist_topup(topup):
+    WORK.mkdir(parents=True, exist_ok=True)
+    with open(TOPUPS_FILE, "a") as fh:
+        fh.write(json.dumps(topup) + "\n")
+
+
+def _load_persisted_topups():
+    if not TOPUPS_FILE.exists():
+        return
+    for line in TOPUPS_FILE.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            topup = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if topup.get("id"):
+            _topups[topup["id"]] = topup
+
+
+def _new_topup(user_id, amount_usd, provider):
+    topup = {
+        "id": uuid.uuid4().hex[:16],
+        "user_id": user_id,
+        "amount_usd": round(float(amount_usd), 2),
+        "provider": provider,
+        "status": "pending",
+        "provider_transaction_id": None,
+        "provider_prepare_id": None,
+        "created_at": time.time(),
+        "paid_at": None,
+    }
+    with _topups_lock:
+        _topups[topup["id"]] = topup
+    _persist_topup(topup)
+    return topup
+
+
+def _find_topup(topup_id=None, provider_transaction_id=None):
+    with _topups_lock:
+        if topup_id is not None:
+            topup = _topups.get(topup_id)
+            return dict(topup) if topup else None
+        if provider_transaction_id is not None:
+            for topup in _topups.values():
+                if topup.get("provider_transaction_id") == provider_transaction_id:
+                    return dict(topup)
+    return None
+
+
+def _update_topup(topup_id, **fields):
+    with _topups_lock:
+        topup = _topups.get(topup_id)
+        if not topup:
+            return None
+        topup.update(fields)
+        snapshot = dict(topup)
+    _persist_topup(snapshot)
+    return snapshot
+
+
+def _credit_topup(topup_id, note):
+    """Marks a topup paid and grants the credit -- idempotent: called
+    twice for the same topup (Payme/Click/Stripe can all legitimately
+    retry a webhook) does nothing the second time, since the status
+    check happens under the same lock as the update. Returns the updated
+    topup, or None if it was already paid (caller should still respond
+    success to the provider either way -- see each provider's handler)."""
+    with _topups_lock:
+        topup = _topups.get(topup_id)
+        if not topup or topup["status"] == "paid":
+            return None
+        topup["status"] = "paid"
+        topup["paid_at"] = time.time()
+        snapshot = dict(topup)
+    try:
+        db.record_spend(snapshot["user_id"], snapshot["amount_usd"], note=note)
+    except db.SupabaseError as exc:
+        # Roll the local state back so a retry (the provider WILL retry a
+        # non-2xx/non-success response) gets another chance to actually
+        # credit the account, instead of being silently treated as
+        # already-done by the idempotency check above.
+        with _topups_lock:
+            _topups[topup_id]["status"] = "pending"
+            _topups[topup_id]["paid_at"] = None
+        raise payments.PaymentError(f"Could not credit account: {exc}") from None
+    _persist_topup(snapshot)
+    return snapshot
+
+
+def _usd_to_uzs_rate():
+    raw = os.environ.get("USD_TO_UZS_RATE", "").strip()
+    if not raw:
+        raise payments.PaymentError(
+            "USD_TO_UZS_RATE is not set -- required for Payme/Click, which bill in UZS. "
+            "See webapp/README.md's Payments section."
+        )
+    try:
+        rate = float(raw)
+    except ValueError:
+        raise payments.PaymentError("USD_TO_UZS_RATE must be a number.") from None
+    if rate <= 0:
+        raise payments.PaymentError("USD_TO_UZS_RATE must be positive.")
+    return rate
+
+
+# ---------------------------------------------------------- Payme methods
+#
+# One function per JSON-RPC method Payme calls on this server -- see
+# webapp/payments.py's module docstring for the confidence caveat on the
+# exact error-code values used here.
+
+def _payme_check_perform_transaction(request_id, params):
+    account = params.get("account") or {}
+    topup = _find_topup(topup_id=account.get("order_id"))
+    if not topup or topup["provider"] != "payme":
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_ACCOUNT_NOT_FOUND, "Order not found")
+    if topup["status"] == "paid":
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_ACCOUNT_NOT_FOUND, "Order already paid")
+    expected = int(round(topup["amount_usd"] * _usd_to_uzs_rate() * 100))
+    if int(params.get("amount") or 0) != expected:
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_INVALID_AMOUNT, "Incorrect amount")
+    return payments.payme_rpc_result(request_id, {"allow": True})
+
+
+def _payme_create_transaction(request_id, params):
+    payme_txn_id = params.get("id")
+    existing = _find_topup(provider_transaction_id=payme_txn_id)
+    if existing:
+        # Payme's own spec: CreateTransaction is sent at least twice for
+        # the same id; a repeat must get exactly the same response as
+        # the first call, not be treated as a new/duplicate transaction.
+        if existing["status"] == "paid":
+            return payments.payme_rpc_error(request_id, payments.PAYME_ERR_CANNOT_PERFORM, "Already completed")
+        return payments.payme_rpc_result(request_id, {
+            "create_time": int(existing["created_at"] * 1000),
+            "transaction": existing["id"],
+            "state": payments.PAYME_STATE_CREATED,
+        })
+    account = params.get("account") or {}
+    topup = _find_topup(topup_id=account.get("order_id"))
+    if not topup or topup["provider"] != "payme":
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_ACCOUNT_NOT_FOUND, "Order not found")
+    if topup["status"] == "paid":
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_ACCOUNT_NOT_FOUND, "Order already paid")
+    if topup.get("provider_transaction_id") and topup["provider_transaction_id"] != payme_txn_id:
+        return payments.payme_rpc_error(
+            request_id, payments.PAYME_ERR_CANNOT_PERFORM, "A different transaction already exists for this order")
+    expected = int(round(topup["amount_usd"] * _usd_to_uzs_rate() * 100))
+    if int(params.get("amount") or 0) != expected:
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_INVALID_AMOUNT, "Incorrect amount")
+    updated = _update_topup(topup["id"], provider_transaction_id=payme_txn_id)
+    return payments.payme_rpc_result(request_id, {
+        "create_time": int(updated["created_at"] * 1000),
+        "transaction": updated["id"],
+        "state": payments.PAYME_STATE_CREATED,
+    })
+
+
+def _payme_perform_transaction(request_id, params):
+    payme_txn_id = params.get("id")
+    topup = _find_topup(provider_transaction_id=payme_txn_id)
+    if not topup:
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_TRANSACTION_NOT_FOUND, "Transaction not found")
+    if topup["status"] != "paid":
+        _credit_topup(topup["id"], note=f"payme:{payme_txn_id}")
+        topup = _find_topup(topup_id=topup["id"])
+    return payments.payme_rpc_result(request_id, {
+        "transaction": topup["id"],
+        "perform_time": int(topup["paid_at"] * 1000),
+        "state": payments.PAYME_STATE_COMPLETED,
+    })
+
+
+def _payme_cancel_transaction(request_id, params):
+    payme_txn_id = params.get("id")
+    topup = _find_topup(provider_transaction_id=payme_txn_id)
+    if not topup:
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_TRANSACTION_NOT_FOUND, "Transaction not found")
+    was_paid = topup["status"] == "paid"
+    if topup["status"] != "cancelled":
+        if was_paid:
+            try:
+                db.record_spend(topup["user_id"], -topup["amount_usd"], note=f"payme:{payme_txn_id}:refund")
+            except db.SupabaseError as exc:
+                raise payments.PaymentError(f"Could not reverse credit: {exc}") from None
+        topup = _update_topup(topup["id"], status="cancelled", cancelled_at=time.time())
+    state = payments.PAYME_STATE_CANCELLED_AFTER_COMPLETE if was_paid else payments.PAYME_STATE_CANCELLED
+    return payments.payme_rpc_result(request_id, {
+        "transaction": topup["id"],
+        "cancel_time": int(topup.get("cancelled_at", time.time()) * 1000),
+        "state": state,
+    })
+
+
+def _payme_check_transaction(request_id, params):
+    topup = _find_topup(provider_transaction_id=params.get("id"))
+    if not topup:
+        return payments.payme_rpc_error(request_id, payments.PAYME_ERR_TRANSACTION_NOT_FOUND, "Transaction not found")
+    if topup["status"] == "paid":
+        state = payments.PAYME_STATE_COMPLETED
+    elif topup["status"] == "cancelled":
+        state = (payments.PAYME_STATE_CANCELLED_AFTER_COMPLETE if topup.get("paid_at")
+                 else payments.PAYME_STATE_CANCELLED)
+    else:
+        state = payments.PAYME_STATE_CREATED
+    return payments.payme_rpc_result(request_id, {
+        "create_time": int(topup["created_at"] * 1000),
+        "perform_time": int(topup["paid_at"] * 1000) if topup.get("paid_at") else 0,
+        "cancel_time": int(topup["cancelled_at"] * 1000) if topup.get("cancelled_at") else 0,
+        "transaction": topup["id"],
+        "state": state,
+    })
+
+
+def _payme_get_statement(request_id, params):
+    frm = (params.get("from") or 0) / 1000
+    to = (params.get("to") or time.time() * 1000) / 1000
+    with _topups_lock:
+        rows = [dict(t) for t in _topups.values()
+                if t["provider"] == "payme" and t.get("provider_transaction_id")
+                and frm <= t["created_at"] <= to]
+    rate = _usd_to_uzs_rate()
+    transactions = []
+    for t in rows:
+        if t["status"] == "paid":
+            state = payments.PAYME_STATE_COMPLETED
+        elif t["status"] == "cancelled":
+            state = (payments.PAYME_STATE_CANCELLED_AFTER_COMPLETE if t.get("paid_at")
+                     else payments.PAYME_STATE_CANCELLED)
+        else:
+            state = payments.PAYME_STATE_CREATED
+        transactions.append({
+            "id": t["provider_transaction_id"],
+            "time": int(t["created_at"] * 1000),
+            "amount": int(round(t["amount_usd"] * rate * 100)),
+            "account": {"order_id": t["id"]},
+            "create_time": int(t["created_at"] * 1000),
+            "perform_time": int(t["paid_at"] * 1000) if t.get("paid_at") else 0,
+            "cancel_time": int(t["cancelled_at"] * 1000) if t.get("cancelled_at") else 0,
+            "transaction": t["id"],
+            "state": state,
+            "reason": None,
+        })
+    return payments.payme_rpc_result(request_id, transactions)
+
+
+# ---------------------------------------------------------- Click methods
+
+def _parse_click_body(raw):
+    """Click's request body format is inconsistent across the
+    integration guides this was cross-referenced against -- some show
+    JSON, some application/x-www-form-urlencoded. Accepts either rather
+    than betting on one, since getting it wrong would just 400 every
+    request with no way to diagnose why from this sandbox (see
+    webapp/payments.py's module docstring)."""
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    return {k: v[0] for k, v in urllib.parse.parse_qs(text).items()}
+
+
+def _click_error_response(fields, error, error_note, **extra):
+    resp = {
+        "click_trans_id": fields.get("click_trans_id"),
+        "merchant_trans_id": fields.get("merchant_trans_id"),
+        "error": error,
+        "error_note": error_note,
+    }
+    resp.update(extra)
+    return resp
+
+
+def _click_handle_prepare(fields):
+    if not payments.click_verify_sign(fields):
+        return _click_error_response(fields, payments.CLICK_ERR_SIGN_FAILED, "Sign check failed")
+    topup = _find_topup(topup_id=fields.get("merchant_trans_id"))
+    if not topup or topup["provider"] != "click":
+        return _click_error_response(fields, payments.CLICK_ERR_ORDER_NOT_FOUND, "Order not found")
+    if topup["status"] == "paid":
+        return _click_error_response(fields, payments.CLICK_ERR_ALREADY_PAID, "Already paid")
+    try:
+        expected = round(topup["amount_usd"] * _usd_to_uzs_rate(), 2)
+    except payments.PaymentError as exc:
+        return _click_error_response(fields, payments.CLICK_ERR_REQUEST_FAILED, str(exc))
+    try:
+        given = round(float(fields.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        given = None
+    if given != expected:
+        return _click_error_response(fields, payments.CLICK_ERR_INVALID_AMOUNT, "Incorrect amount")
+    _update_topup(topup["id"], provider_prepare_id=topup["id"])
+    return _click_error_response(fields, payments.CLICK_ERR_SUCCESS, "Success", merchant_prepare_id=topup["id"])
+
+
+def _click_handle_complete(fields):
+    if not payments.click_verify_sign(fields):
+        return _click_error_response(fields, payments.CLICK_ERR_SIGN_FAILED, "Sign check failed")
+    topup = _find_topup(topup_id=fields.get("merchant_trans_id"))
+    if not topup or topup["provider"] != "click":
+        return _click_error_response(fields, payments.CLICK_ERR_ORDER_NOT_FOUND, "Order not found")
+    if str(fields.get("merchant_prepare_id")) != str(topup.get("provider_prepare_id")):
+        return _click_error_response(fields, payments.CLICK_ERR_TRANSACTION_NOT_FOUND, "Prepare id mismatch")
+    if topup["status"] == "paid":
+        return _click_error_response(fields, payments.CLICK_ERR_SUCCESS, "Success", merchant_confirm_id=topup["id"])
+    if int(fields.get("error") or 0) < 0:
+        _update_topup(topup["id"], status="cancelled", cancelled_at=time.time())
+        return _click_error_response(
+            fields, payments.CLICK_ERR_TRANSACTION_CANCELLED, "Transaction cancelled by Click")
+    try:
+        _credit_topup(topup["id"], note=f"click:{fields.get('click_trans_id')}")
+    except payments.PaymentError as exc:
+        return _click_error_response(fields, payments.CLICK_ERR_REQUEST_FAILED, str(exc))
+    _update_topup(topup["id"], provider_transaction_id=fields.get("click_trans_id"))
+    return _click_error_response(fields, payments.CLICK_ERR_SUCCESS, "Success", merchant_confirm_id=topup["id"])
+
+
 # ------------------------------------------------------------------ errors
 
 def friendly_error(exc):
@@ -897,6 +1230,14 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("request body too large")
         return json.loads(self.rfile.read(length))
 
+    def _read_raw_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return b""
+        if length > MAX_BODY_BYTES:
+            raise ValueError("request body too large")
+        return self.rfile.read(length)
+
     # -- routing ---------------------------------------------------------
 
     def _require_basic_auth(self):
@@ -976,9 +1317,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": friendly_error(exc)})
 
     def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        # Payment-provider webhooks authenticate themselves -- Stripe via
+        # Stripe-Signature, Payme via its own HTTP Basic Auth (a fixed
+        # "Paycom" login, not this deployment's WEBAPP_BASIC_AUTH_*), Click
+        # via sign_string. None of them know this server's own Basic Auth
+        # credentials, so _require_basic_auth() would wrongly block every
+        # one of them; and Stripe's signature must be verified against the
+        # exact raw body bytes, not a value round-tripped through
+        # json.loads the way every other route's body is. Handled entirely
+        # separately, before both of those.
+        if path in ("/api/topup/stripe/webhook", "/api/topup/payme",
+                    "/api/topup/click/prepare", "/api/topup/click/complete"):
+            return self._handle_payment_webhook(path)
+
         if not self._require_basic_auth():
             return
-        path = urllib.parse.urlparse(self.path).path
         try:
             body = self._read_json()
             if path == "/api/auth/signup":
@@ -993,6 +1347,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._create_character(body)
             if path == "/api/characters/delete":
                 return self._delete_character(body)
+            if path == "/api/topup/create":
+                return self._create_topup(body)
             if path == "/api/quote":
                 return self._quote(body)
             if path == "/api/generate/image":
@@ -1122,6 +1478,18 @@ class Handler(BaseHTTPRequestHandler):
             "avatar": {
                 "rate": _retail_rate(CONFIG["rates"]["avatar_per_second_usd"]),
                 "resolutions": ["720p", "1080p"],
+            },
+            "topup": {
+                # Each provider is opt-in per its own env vars (see
+                # webapp/payments.py) -- listed here only once actually
+                # configured, so the UI shows exactly the payment buttons
+                # that will work rather than every button this project
+                # knows how to build.
+                "providers": [p for p, ok in (
+                    ("stripe", payments.stripe_configured()),
+                    ("payme", payments.payme_configured()),
+                    ("click", payments.click_configured()),
+                ) if ok],
             },
             "mcp": {
                 # MCP_PUBLIC_URL is set by the operator only after deploying
@@ -1271,6 +1639,142 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = dict(job)
         _persist(snapshot)
         return self._send(200, {"public": snapshot["public"]})
+
+    # -- credit top-up (Stripe / Payme / Click) ---------------------------
+
+    def _create_topup(self, body):
+        """Starts a top-up: records it locally (status "pending"), then
+        asks the chosen provider for a URL to send the browser to. The
+        account is NOT credited here -- only the provider's own webhook
+        (verified independently below) can do that. `origin` is the
+        browser's own window.location.origin, validated the same way
+        every other client-supplied URL in this file is
+        (_require_public_url) -- used to build Stripe's success/cancel
+        redirect targets and passed to Payme/Click as their own return
+        url."""
+        user = self._require_current_user()
+        try:
+            amount = float(body.get("amount_usd"))
+        except (TypeError, ValueError):
+            raise ValueError("Enter a valid amount.") from None
+        if not (1 <= amount <= 1000):
+            raise ValueError("Amount must be between $1 and $1000.")
+        provider = (body.get("provider") or "").strip()
+        origin = _require_public_url(body.get("origin"), "Origin")
+
+        topup = _new_topup(user["id"], amount, provider)
+
+        if provider == "stripe":
+            if not payments.stripe_configured():
+                raise ValueError("Stripe is not configured on this server.")
+            try:
+                session = payments.create_stripe_checkout_session(
+                    amount, f"{origin}/?topup=success", f"{origin}/?topup=cancelled",
+                    topup["id"], {"user_id": user["id"], "topup_id": topup["id"]},
+                )
+            except payments.PaymentError as exc:
+                raise ValueError(str(exc)) from None
+            _update_topup(topup["id"], provider_transaction_id=session.get("id"))
+            return self._send(200, {"redirect_url": session["url"]})
+
+        if provider == "payme":
+            if not payments.payme_configured():
+                raise ValueError("Payme is not configured on this server.")
+            try:
+                url = payments.payme_checkout_url(topup["id"], amount, _usd_to_uzs_rate(), return_url=origin)
+            except payments.PaymentError as exc:
+                raise ValueError(str(exc)) from None
+            return self._send(200, {"redirect_url": url})
+
+        if provider == "click":
+            if not payments.click_configured():
+                raise ValueError("Click is not configured on this server.")
+            try:
+                url = payments.click_checkout_url(topup["id"], amount, _usd_to_uzs_rate(), return_url=origin)
+            except payments.PaymentError as exc:
+                raise ValueError(str(exc)) from None
+            return self._send(200, {"redirect_url": url})
+
+        raise ValueError("Unknown payment provider.")
+
+    def _handle_payment_webhook(self, path):
+        """Entry point for every provider callback (see do_POST) -- none
+        of these run through the normal do_POST try/except (that one
+        calls _read_json() unconditionally, and ValueError -> 400 the
+        way every other endpoint's errors do; a payment provider expects
+        its own specific response shape and status code on failure, not
+        this project's generic {"error": ...} body), so this has its own
+        top-level exception handling."""
+        try:
+            raw = self._read_raw_body()
+            if path == "/api/topup/stripe/webhook":
+                return self._stripe_webhook(raw)
+            if path == "/api/topup/payme":
+                return self._payme_rpc(raw)
+            if path == "/api/topup/click/prepare":
+                return self._click_prepare(raw)
+            if path == "/api/topup/click/complete":
+                return self._click_complete(raw)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            return self._send(500, {"error": "internal error"})
+
+    def _stripe_webhook(self, raw):
+        sig = self.headers.get("Stripe-Signature", "")
+        try:
+            event = payments.verify_stripe_webhook(raw, sig)
+        except payments.PaymentError as exc:
+            print(f"  WARNING: Stripe webhook rejected: {exc}")
+            return self._send(400, {"error": str(exc)})
+        if event.get("type") == "checkout.session.completed":
+            session = event.get("data", {}).get("object", {})
+            topup_id = session.get("client_reference_id")
+            if topup_id and session.get("payment_status") == "paid":
+                try:
+                    _credit_topup(topup_id, note=f"stripe:{session.get('id')}")
+                except payments.PaymentError as exc:
+                    print(f"  WARNING: Stripe topup crediting failed for {topup_id}: {exc}")
+                    # Non-2xx tells Stripe to retry this webhook later,
+                    # instead of losing the payment because our own
+                    # crediting step (e.g. Supabase) hiccuped.
+                    return self._send(500, {"error": "credit failed, will retry"})
+        return self._send(200, {"received": True})
+
+    def _payme_rpc(self, raw):
+        try:
+            req = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(200, payments.payme_rpc_error(None, payments.PAYME_ERR_PARSE_ERROR, "Parse error"))
+        request_id = req.get("id")
+        if not payments.payme_check_auth(self.headers.get("Authorization", "")):
+            return self._send(200, payments.payme_rpc_error(
+                request_id, payments.PAYME_ERR_INVALID_AUTH, "Invalid authorization"))
+        method = req.get("method")
+        params = req.get("params") or {}
+        try:
+            handlers = {
+                "CheckPerformTransaction": _payme_check_perform_transaction,
+                "CreateTransaction": _payme_create_transaction,
+                "PerformTransaction": _payme_perform_transaction,
+                "CancelTransaction": _payme_cancel_transaction,
+                "CheckTransaction": _payme_check_transaction,
+                "GetStatement": _payme_get_statement,
+            }
+            handler = handlers.get(method)
+            if not handler:
+                return self._send(200, payments.payme_rpc_error(
+                    request_id, payments.PAYME_ERR_METHOD_NOT_FOUND, "Method not found"))
+            return self._send(200, handler(request_id, params))
+        except payments.PaymentError as exc:
+            return self._send(200, payments.payme_rpc_error(request_id, payments.PAYME_ERR_SYSTEM, str(exc)))
+
+    def _click_prepare(self, raw):
+        fields = _parse_click_body(raw)
+        return self._send(200, _click_handle_prepare(fields))
+
+    def _click_complete(self, raw):
+        fields = _parse_click_body(raw)
+        return self._send(200, _click_handle_complete(fields))
 
     def _auth_signup(self, body):
         if not db.configured():
@@ -1689,6 +2193,7 @@ def main():
     args = ap.parse_args()
 
     _load_persisted()
+    _load_persisted_topups()
 
     if not os.environ.get("FAL_KEY", "").strip():
         print("  WARNING: FAL_KEY is not set — the UI will load but generation will fail.")
