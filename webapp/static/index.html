@@ -194,6 +194,11 @@
         <textarea id="motion-prompt" rows="2" class="big-input" data-i18n-placeholder="motion.prompt.placeholder"></textarea>
       </label>
 
+      <label class="consent-row">
+        <input id="motion-consent" type="checkbox">
+        <span data-i18n="avatar.consent">Bu mening o'z rasmim, yoki men tasvirlangan insonning ruxsatiga egaman</span>
+      </label>
+
       <button id="btn-motion" class="btn primary big" type="button" data-i18n="motion.button">Narxni bilish</button>
       <p id="motion-error" class="muted small err" hidden></p>
 
@@ -236,6 +241,11 @@
         <div id="avatar-res-chips" class="chips"></div>
       </div>
 
+      <label class="consent-row">
+        <input id="avatar-consent" type="checkbox">
+        <span data-i18n="avatar.consent">Bu mening o'z rasmim, yoki men tasvirlangan insonning ruxsatiga egaman</span>
+      </label>
+
       <button id="btn-avatar" class="btn primary big" type="button" data-i18n="avatar.button">Narxni bilish</button>
       <p id="avatar-error" class="muted small err" hidden></p>
     </section>
@@ -248,6 +258,7 @@
           <p class="muted" data-i18n="avatar.result.subtitle">Ko'ring va yuklab oling</p>
         </div>
       </div>
+      <p class="muted small" data-i18n="avatar.disclosure">Bu video sun'iy intellekt tomonidan yaratilgan.</p>
       <div id="avatar-results" class="results" aria-live="polite">
         <div class="empty">
           <p><strong data-i18n="avatar.empty.title">Hali avatar yo'q</strong></p>
@@ -455,6 +466,23 @@
     <div class="modal-actions">
       <button id="postprod-cancel" class="btn ghost" type="button" data-i18n="postprod.cancel">Bekor qilish</button>
       <button id="postprod-quote" class="btn primary big" type="button" data-i18n="postprod.getprice">Narxni bilish</button>
+    </div>
+  </div>
+</div>
+
+<!-- Report a gallery item -->
+<div id="report-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="report-title">
+    <h3 id="report-title" data-i18n="report.title">Shikoyat qilish</h3>
+    <p class="muted small" data-i18n="report.subtitle">Bu video kimningdir roziligisiz suratini ishlatgan bo'lsa yoki boshqa muammo bo'lsa, bizga xabar bering.</p>
+    <label class="field">
+      <span class="label" data-i18n="report.reason">Sabab</span>
+      <textarea id="report-reason" rows="3" class="big-input" data-i18n-placeholder="report.reason.placeholder"></textarea>
+    </label>
+    <p id="report-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="report-cancel" class="btn ghost" type="button" data-i18n="report.cancel">Bekor qilish</button>
+      <button id="report-submit" class="btn primary big" type="button" data-i18n="report.submit">Yuborish</button>
     </div>
   </div>
 </div>

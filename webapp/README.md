@@ -149,6 +149,47 @@ Results land in History as an "Enhanced (op)" card once done. Multi-shot
 continuity (`final --shots-json`) is a CLI-only, authoring-time decision
 (you choose it before generating, not after) and isn't exposed here.
 
+### Consent, disclosure, and moderation (talking avatar / motion transfer)
+
+Both features that animate a photo of a specific person — the talking
+avatar and motion transfer — require an explicit consent attestation
+before they'll run at all: `POST /api/avatar/run` and
+`POST /api/motion-transfer/run` reject the request unless the body
+includes `consent_attested: true` and `consent_type` set to `"self"` or
+`"authorized"` (`_require_identity_consent` in `webapp/server.py`). The
+web UI's checkbox on both panels ("This is my own photo, or I have the
+pictured person's permission") sends `consent_type: "authorized"`, the
+more general of the two values a single checkbox can honestly represent.
+This does **not** verify the claim — it makes generating without at
+least claiming consent impossible through this API, and the attestation
+is stored on the job record (`consent_type`, `consent_at`) as a durable
+trail to point to if a report comes in later.
+
+Three more pieces close this out:
+
+- **Abuse rate limit.** Avatar generation is capped separately from every
+  other paid endpoint and from the money-cost gate itself
+  (`AVATAR_RATE_LIMIT`, default 10/day per account, `AVATAR_RATE_WINDOW`)
+  — a funded account is not, on its own, a reason to allow mass
+  production of videos of other people's likeness.
+- **Disclosure.** Every avatar output gets a small "AI-generated"
+  watermark burned in via ffmpeg (`_burn_avatar_disclosure`) before it's
+  handed back — best-effort: if the font isn't installed (see the
+  Dockerfile's `fonts-dejavu-core`) or the burn fails for any reason, the
+  job still completes using the original, unwatermarked output rather
+  than failing a paid generation over a disclosure step, and
+  `job.disclosure` records which outcome happened (`"watermarked"` or
+  `"label-only"`). The UI's own on-screen disclosure text is shown either
+  way.
+- **Reporting.** Any gallery item can be reported — `POST
+  /api/jobs/<id>/report` with a `reason`, deliberately no sign-in
+  required (the person whose likeness was used without consent is often
+  not the account that generated it). Reporting immediately unpublishes
+  the job from the gallery and appends an entry to
+  `webapp_reports.jsonl`. There is no admin review UI at this project's
+  stage — an operator reviews that file directly and decides on further
+  action (removing the underlying media, contacting the account, etc.).
+
 ### Payments — letting users top up their own balance
 
 A signed-in user can add credit to their own balance from the "Top up"

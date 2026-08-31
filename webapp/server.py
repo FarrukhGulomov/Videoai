@@ -51,6 +51,7 @@ STATIC = pathlib.Path(__file__).resolve().parent / "static"
 WORK = ROOT / "work"
 JOBS_FILE = WORK / "webapp_jobs.jsonl"
 TOPUPS_FILE = WORK / "webapp_topups.jsonl"
+REPORTS_FILE = WORK / "webapp_reports.jsonl"
 
 MAX_BODY_BYTES = 2 * 1024 * 1024  # prompts and settings only; media goes by URL
 
@@ -155,6 +156,24 @@ def _clear_cookie_header(secure=False):
     return ("Set-Cookie", f"{SESSION_COOKIE}=; {flags}; Max-Age=0")
 
 
+def _sliding_window_check(store, lock, key, limit, window_seconds, message):
+    """Generic in-memory sliding-window limiter shared by every rate
+    limit in this file (see _check_auth_rate_limit, IP-keyed, and
+    _check_avatar_rate_limit, user-keyed). This process is the only
+    server instance (ThreadingHTTPServer, no external process pool) so
+    an in-memory dict is enough for each -- it resets on restart, an
+    acceptable trade-off for what these guard against. Raises
+    ValueError, handled the same friendly-error way as every other
+    rejection in this file."""
+    now = time.time()
+    with lock:
+        attempts = [t for t in store.get(key, []) if now - t < window_seconds]
+        if len(attempts) >= limit:
+            raise ValueError(message)
+        attempts.append(now)
+        store[key] = attempts
+
+
 _AUTH_ATTEMPTS = {}
 _AUTH_ATTEMPTS_LOCK = threading.Lock()
 AUTH_RATE_LIMIT = 8       # attempts
@@ -175,21 +194,48 @@ def _client_ip(handler):
 
 
 def _check_auth_rate_limit(handler):
-    """Simple in-memory sliding-window limiter for /api/auth/login and
-    /api/auth/signup, the two endpoints most worth throttling (credential
-    stuffing, brute force, signup spam). This process is the only server
-    instance (ThreadingHTTPServer, no external process pool) so an
-    in-memory dict is enough -- it resets on restart, an acceptable
-    trade-off for what this guards against. Raises ValueError, handled the
-    same friendly-error way as every other rejection in this file."""
-    ip = _client_ip(handler)
-    now = time.time()
-    with _AUTH_ATTEMPTS_LOCK:
-        attempts = [t for t in _AUTH_ATTEMPTS.get(ip, []) if now - t < AUTH_RATE_WINDOW]
-        if len(attempts) >= AUTH_RATE_LIMIT:
-            raise ValueError("Too many attempts. Wait a few minutes and try again.")
-        attempts.append(now)
-        _AUTH_ATTEMPTS[ip] = attempts
+    """Sliding-window limiter for /api/auth/login and /api/auth/signup,
+    the two endpoints most worth throttling (credential stuffing, brute
+    force, signup spam)."""
+    _sliding_window_check(_AUTH_ATTEMPTS, _AUTH_ATTEMPTS_LOCK, _client_ip(handler),
+                           AUTH_RATE_LIMIT, AUTH_RATE_WINDOW,
+                           "Too many attempts. Wait a few minutes and try again.")
+
+
+_AVATAR_ATTEMPTS = {}
+_AVATAR_ATTEMPTS_LOCK = threading.Lock()
+AVATAR_RATE_LIMIT = int(os.environ.get("AVATAR_RATE_LIMIT", "10"))       # generations
+AVATAR_RATE_WINDOW = int(os.environ.get("AVATAR_RATE_WINDOW", "86400"))  # seconds (24h)
+
+
+def _check_avatar_rate_limit(user_id):
+    """Talking-avatar generation gets its own abuse brake, separate from
+    every other paid endpoint and from the money-cost gate: a funded
+    account paying for each one is still not a reason to allow mass
+    production of videos of other people's likeness. Caps generations
+    per rolling window per account regardless of balance -- see
+    webapp/README.md's consent/moderation notes."""
+    _sliding_window_check(
+        _AVATAR_ATTEMPTS, _AVATAR_ATTEMPTS_LOCK, user_id, AVATAR_RATE_LIMIT, AVATAR_RATE_WINDOW,
+        f"Avatar generation is limited to {AVATAR_RATE_LIMIT} per day per account, "
+        "to prevent misuse of someone else's likeness. Try again later.")
+
+
+_REPORT_ATTEMPTS = {}
+_REPORT_ATTEMPTS_LOCK = threading.Lock()
+REPORT_RATE_LIMIT = 20     # reports
+REPORT_RATE_WINDOW = 3600  # seconds
+
+
+def _check_report_rate_limit(handler):
+    """IP-keyed, not user-keyed -- reporting deliberately needs no
+    sign-in (see _report_job), so there's no account to key on. Loose
+    enough not to block a person legitimately reporting several videos,
+    tight enough to blunt a script trying to mass-unpublish content via
+    fake reports."""
+    _sliding_window_check(_REPORT_ATTEMPTS, _REPORT_ATTEMPTS_LOCK, _client_ip(handler),
+                           REPORT_RATE_LIMIT, REPORT_RATE_WINDOW,
+                           "Too many reports from this address. Try again later.")
 
 
 def _basic_auth_credentials():
@@ -206,6 +252,27 @@ def _basic_auth_credentials():
     if user and pw:
         return user, pw
     return None
+
+
+def _require_identity_consent(body):
+    """Talking-avatar and motion-transfer generation both animate a
+    specific photo of a person -- require an explicit, informed
+    attestation before either is allowed to run at all, rather than
+    treating "the caller uploaded a photo" as implied permission to
+    animate whoever is in it. The attestation is stored on the job
+    record (see the callers, which pass consent_type/consent_at through
+    to _new_job) as a durable, if unverified, consent trail: this does
+    not confirm the claim is true, but it makes generating without at
+    least claiming consent impossible through this API, and gives every
+    job a clear record to point to if a report comes in later (see
+    _report_job in the Handler class)."""
+    consent_type = body.get("consent_type")
+    if not body.get("consent_attested") or consent_type not in ("self", "authorized"):
+        raise ValueError(
+            "Confirm this is your own photo, or that you have the pictured "
+            "person's permission to animate their likeness, before continuing."
+        )
+    return consent_type
 
 
 def _is_public_ip(ip_str):
@@ -562,6 +629,15 @@ def _persist(job):
     WORK.mkdir(parents=True, exist_ok=True)
     with open(JOBS_FILE, "a") as fh:
         fh.write(json.dumps(job) + "\n")
+
+
+def _persist_report(report):
+    """Append-only report log -- see Handler._report_job. There is no
+    admin review UI yet; an operator inspects this file directly (see
+    webapp/README.md's moderation notes) until one exists."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    with open(REPORTS_FILE, "a") as fh:
+        fh.write(json.dumps(report) + "\n")
 
 
 def _load_persisted():
@@ -1404,6 +1480,53 @@ def _run_motion_transfer_job(job_id, image_url, video_url, prompt, wholesale_cos
         _persist(job)
 
 
+AVATAR_DISCLOSURE_FONT = pathlib.Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+AVATAR_DISCLOSURE_TEXT = "AI-generated"
+
+
+def _burn_avatar_disclosure(job_id, source_url):
+    """Best-effort visible disclosure watermark on every avatar output --
+    downloads the fal-hosted result, burns a small "AI-generated" label
+    into the corner via ffmpeg's drawtext, and returns the local
+    /media/... path to use instead of the original fal URL, or None if
+    the watermark can't be produced for any reason (missing font file,
+    ffmpeg failing, a download error). Never raises -- a disclosure
+    problem must not block or fail the underlying paid generation; the
+    job records which outcome actually happened (see "disclosure" on the
+    job dict) and the UI's own on-screen disclosure label is the
+    fallback either way (see webapp/static/i18n.js's avatar.disclosure)."""
+    if not AVATAR_DISCLOSURE_FONT.exists():
+        return None
+    out_dir = WORK / "avatar"
+    raw_path = None
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = factory.download(source_url, out_dir / f"{job_id}_src.mp4")
+        out_path = out_dir / f"{job_id}.mp4"
+        escaped_font = str(AVATAR_DISCLOSURE_FONT).replace("\\", "\\\\").replace(":", "\\:")
+        drawtext = (
+            f"drawtext=fontfile={escaped_font}:text='{AVATAR_DISCLOSURE_TEXT}':"
+            "fontcolor=white:fontsize=h/28:box=1:boxcolor=black@0.55:boxborderw=8:"
+            "x=w-tw-16:y=h-th-16"
+        )
+        res = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(raw_path), "-vf", drawtext,
+             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-c:a", "copy", str(out_path)],
+            capture_output=True, text=True, check=False, timeout=600,
+        )
+        if res.returncode != 0 or not out_path.exists():
+            print(f"  WARNING: avatar disclosure watermark failed for job {job_id}: {res.stderr[-500:]}")
+            return None
+        return f"/media/avatar/{job_id}.mp4"
+    except Exception as exc:  # noqa: BLE001 - disclosure is best-effort, must never fail the job
+        print(f"  WARNING: avatar disclosure watermark errored for job {job_id}: {exc}")
+        return None
+    finally:
+        if raw_path is not None:
+            raw_path.unlink(missing_ok=True)
+
+
 def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost,
                      owner_id, reservation_key):
     """Turns a photo + voice track into a talking-head video (OmniHuman).
@@ -1428,14 +1551,19 @@ def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, who
         url = factory.first_url(result, "video", "videos")
         _validate_outputs([url], "video")
 
+        _update(job_id, stage="Adding disclosure watermark…")
+        watermarked = _burn_avatar_disclosure(job_id, url)
+        final_url = watermarked or url
+        disclosure = "watermarked" if watermarked else "label-only"
+
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "avatar", "model": model,
             "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
         _capture(job_id, reservation_key, note=f"web:{job_id} avatar")
-        job = _update(job_id, status="done", stage="Done", outputs=[url],
-                      request_id=result.get("_request_id"), credit_deducted=True)
+        job = _update(job_id, status="done", stage="Done", outputs=[final_url],
+                      request_id=result.get("_request_id"), credit_deducted=True, disclosure=disclosure)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
@@ -1631,6 +1759,9 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/jobs/") and path.endswith("/publish"):
                 job_id = path[len("/api/jobs/"):-len("/publish")]
                 return self._toggle_publish(job_id, body)
+            if path.startswith("/api/jobs/") and path.endswith("/report"):
+                job_id = path[len("/api/jobs/"):-len("/report")]
+                return self._report_job(job_id, body)
             return self._send(404, {"error": "Unknown endpoint."})
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
@@ -1900,6 +2031,40 @@ class Handler(BaseHTTPRequestHandler):
             snapshot = dict(job)
         _persist(snapshot)
         return self._send(200, {"public": snapshot["public"]})
+
+    def _report_job(self, job_id, body):
+        """Anyone can report a job -- deliberately no sign-in required:
+        the person whose likeness was used without consent is very often
+        NOT the account that generated it, and requiring an account would
+        defeat the point. Reporting immediately and automatically
+        unpublishes the job from the gallery (a soft moderation action
+        taken without waiting for manual review, since a report already
+        means someone is objecting to it being visible) and appends an
+        entry to webapp_reports.jsonl for an operator to review -- there
+        is no admin review UI yet at this project's stage; see
+        webapp/README.md's moderation notes."""
+        _check_report_rate_limit(self)
+        reason = (body.get("reason") or "").strip()
+        if not reason:
+            raise ValueError("Describe why you're reporting this.")
+        if len(reason) > 2000:
+            raise ValueError("Keep the report under 2000 characters.")
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if not job:
+                raise ValueError("No such job.")
+            job["public"] = False
+            job["reported"] = True
+            snapshot = dict(job)
+        _persist(snapshot)
+        _persist_report({
+            "id": uuid.uuid4().hex[:12],
+            "job_id": job_id,
+            "reporter_ip": _client_ip(self),
+            "reason": reason,
+            "created_at": time.time(),
+        })
+        return self._send(200, {"received": True})
 
     # -- credit top-up (Stripe / Payme / Click) ---------------------------
 
@@ -2355,6 +2520,7 @@ class Handler(BaseHTTPRequestHandler):
         image_url = _require_public_url(body.get("image_url"), "Character photo", allow_data=True)
         video_url = _require_public_url(body.get("video_url"), "Reference video")
         prompt = (body.get("prompt") or "").strip()
+        consent_type = _require_identity_consent(body)
 
         wholesale_rate = CONFIG["rates"]["motion_transfer_per_second_usd"]
         try:
@@ -2380,6 +2546,7 @@ class Handler(BaseHTTPRequestHandler):
             "motion_transfer", user, body, cost, "motion_transfer", _run_motion_transfer_job,
             (image_url, video_url, prompt, wholesale_cost, cost), "web:motion_transfer",
             duration_seconds=round(duration, 2),
+            consent_type=consent_type, consent_at=time.time(),
         )
         return self._send(202, job)
 
@@ -2408,6 +2575,7 @@ class Handler(BaseHTTPRequestHandler):
         if resolution not in ("720p", "1080p"):
             raise ValueError("Resolution must be 720p or 1080p.")
         turbo = bool(body.get("turbo"))
+        consent_type = _require_identity_consent(body)
 
         wholesale_rate = CONFIG["rates"]["avatar_per_second_usd"]
         try:
@@ -2429,10 +2597,12 @@ class Handler(BaseHTTPRequestHandler):
         self._require_pricing_version(body)
 
         user = self._current_user_or_raise()
+        _check_avatar_rate_limit(user["id"])
         job = self._start_paid_job(
             "avatar", user, body, cost, "avatar", _run_avatar_job,
             (image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost), "web:avatar",
             duration_seconds=round(duration, 2),
+            consent_type=consent_type, consent_at=time.time(),
         )
         return self._send(202, job)
 

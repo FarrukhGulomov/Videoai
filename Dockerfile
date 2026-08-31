@@ -8,8 +8,14 @@
 
 FROM python:3.11-slim
 
+# fonts-dejavu-core: not for subtitles (libass finds its own fallback) --
+# it's what lets the avatar-generation disclosure watermark actually
+# render (see webapp/server.py's _burn_avatar_disclosure, which looks for
+# DejaVuSans-Bold.ttf at the path this package installs it to and skips
+# the burn entirely, falling back to a label-only disclosure, if it's
+# missing).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

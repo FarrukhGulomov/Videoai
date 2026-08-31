@@ -143,6 +143,7 @@
     wireTopup();
     wirePostprod();
     wireAvatar();
+    wireReport();
     checkHealth();
     await checkAuth();
     loadHistory();
@@ -1468,8 +1469,65 @@
       const media = isVideo
         ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
         : el("img", { src: url, alt: "", loading: "lazy" });
-      return el("div", { class: "card" }, media);
+      return el("div", { class: "card" }, media,
+        el("div", { class: "card-body" },
+          el("span", { class: "spacer" }),
+          el("button", {
+            class: "btn ghost small", type: "button",
+            onclick: () => openReportModal(job.id), text: t("report.button"),
+          })));
     }));
+  }
+
+  // -------------------------------------------------------- report a job
+
+  let reportingJobId = null;
+
+  function wireReport() {
+    $("report-cancel").addEventListener("click", closeReportModal);
+    $("report-submit").addEventListener("click", submitReport);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("report-modal").hidden) closeReportModal();
+    });
+  }
+
+  function openReportModal(jobId) {
+    reportingJobId = jobId;
+    $("report-reason").value = "";
+    $("report-error").hidden = true;
+    $("report-modal").hidden = false;
+    $("report-reason").focus();
+  }
+
+  function closeReportModal() {
+    $("report-modal").hidden = true;
+    reportingJobId = null;
+  }
+
+  async function submitReport() {
+    const errEl = $("report-error");
+    const reason = $("report-reason").value.trim();
+    if (!reason) {
+      errEl.textContent = t("report.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("report-submit");
+    btn.disabled = true;
+    try {
+      await api(`/api/jobs/${encodeURIComponent(reportingJobId)}/report`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      closeReportModal();
+      toast(t("report.received"));
+      loadGallery();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // ------------------------------------------------------- post-production
@@ -1644,6 +1702,11 @@
       errEl.hidden = false;
       return;
     }
+    if (!$("avatar-consent").checked) {
+      errEl.textContent = t("avatar.error.consent");
+      errEl.hidden = false;
+      return;
+    }
     const prompt = $("avatar-prompt").value.trim();
     let quote;
     try {
@@ -1670,6 +1733,11 @@
         image_url: imageUrl, audio_url: audioUrl,
         resolution: state.avatarResolution, approved_cost: quote.cost_usd,
         pricing_version: quote.pricing_version,
+        // The checkbox is a single combined attestation ("it's mine, or I
+        // have permission") rather than two separate self/authorized
+        // options -- "authorized" is the more general of the two values
+        // the server accepts, so it's what a single checkbox maps to.
+        consent_attested: true, consent_type: "authorized",
       };
       if (prompt) body.prompt = prompt;
       const job = await api("/api/avatar/run", { method: "POST", body: JSON.stringify(body) });
@@ -1757,6 +1825,11 @@
       errEl.hidden = false;
       return;
     }
+    if (!$("motion-consent").checked) {
+      errEl.textContent = t("avatar.error.consent");
+      errEl.hidden = false;
+      return;
+    }
     const prompt = $("motion-prompt").value.trim();
     let quote;
     try {
@@ -1782,6 +1855,7 @@
       const body = {
         image_url: imageUrl, video_url: videoUrl,
         approved_cost: quote.cost_usd, pricing_version: quote.pricing_version,
+        consent_attested: true, consent_type: "authorized",
       };
       if (prompt) body.prompt = prompt;
       const job = await api("/api/motion-transfer/run", { method: "POST", body: JSON.stringify(body) });
