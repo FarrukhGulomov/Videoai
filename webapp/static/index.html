@@ -33,6 +33,7 @@
   <button id="tab-create" class="tab is-active" type="button" data-i18n="nav.create">Yaratish</button>
   <button id="tab-avatar" class="tab" type="button" data-i18n="nav.avatar">Avatar</button>
   <button id="tab-history" class="tab" type="button" data-i18n="nav.history">Videolarim</button>
+  <button id="tab-gallery" class="tab" type="button" data-i18n="nav.gallery">Galereya</button>
 </nav>
 
 <main>
@@ -50,6 +51,11 @@
         <span class="mode-icon" aria-hidden="true">🎬</span>
         <strong data-i18n="mode.video.title">Video yaratish</strong>
         <span class="muted" data-i18n="mode.video.subtitle">Suratni jonlantiring</span>
+      </button>
+      <button id="mode-motion" class="mode-card" type="button">
+        <span class="mode-icon" aria-hidden="true">🕺</span>
+        <strong data-i18n="mode.motion.title">Harakatni ko'chirish</strong>
+        <span class="muted" data-i18n="mode.motion.subtitle">Video harakatini rasmingizga bering</span>
       </button>
     </div>
 
@@ -115,6 +121,11 @@
 
       <div class="or-divider"><span data-i18n="step1.or">yoki tasvirlab bering</span></div>
 
+      <div id="character-section" class="chip-row" hidden>
+        <span class="chip-label" data-i18n="character.label">Personaj (ixtiyoriy)</span>
+        <div id="character-chips" class="chips"></div>
+      </div>
+
       <span class="chip-label" data-i18n="step1.presets">Tayyor g'oyalar</span>
       <div id="presets" class="presets" role="group" aria-label="Presets"></div>
 
@@ -127,6 +138,11 @@
           <select id="aspect-select" class="big-input"></select>
         </div>
       </label>
+
+      <div class="chip-row">
+        <span class="chip-label" data-i18n="camera.label">Kamera harakati</span>
+        <div id="camera-chips" class="chips"></div>
+      </div>
 
       <div class="chip-row">
         <span class="chip-label" data-i18n="step3.duration">Davomiyligi</span>
@@ -144,6 +160,52 @@
         <div class="empty">
           <p><strong data-i18n="step4.empty.title">Hali video yo'q</strong></p>
           <p class="muted" data-i18n="step4.empty.body">Tayyor bo'lgan videongiz shu yerda ko'rinadi</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- Motion transfer panel ---- -->
+    <section id="panel-motion" class="step" hidden aria-labelledby="pm-title">
+      <button class="back-btn" id="back-from-motion" type="button">
+        <span aria-hidden="true">←</span> <span data-i18n="mode.back">Orqaga</span>
+      </button>
+      <div class="step-head">
+        <div>
+          <h2 id="pm-title" data-i18n="mode.motion.title">Harakatni ko'chirish</h2>
+          <p class="muted" data-i18n="motion.subtitle">Namuna videodagi harakatni rasmingizga bering — masalan, raqs yoki imo-ishoralarni.</p>
+        </div>
+      </div>
+
+      <div class="upload-row">
+        <label class="btn ghost upload-btn">
+          <input id="motion-image-upload" type="file" accept="image/*" hidden>
+          <span data-i18n="motion.uploadPhoto">Rasm yuklash</span>
+        </label>
+        <span id="motion-image-filename" class="muted small"></span>
+      </div>
+
+      <label class="field">
+        <span class="label" data-i18n="motion.videoUrl">Namuna video havolasi</span>
+        <input id="motion-video-url" type="url" class="big-input" data-i18n-placeholder="motion.videoUrl.placeholder">
+      </label>
+
+      <label class="field">
+        <span class="label" data-i18n="motion.prompt">Qo'shimcha yo'riqnoma (ixtiyoriy)</span>
+        <textarea id="motion-prompt" rows="2" class="big-input" data-i18n-placeholder="motion.prompt.placeholder"></textarea>
+      </label>
+
+      <label class="consent-row">
+        <input id="motion-consent" type="checkbox">
+        <span data-i18n="avatar.consent">Bu mening o'z rasmim, yoki men tasvirlangan insonning ruxsatiga egaman</span>
+      </label>
+
+      <button id="btn-motion" class="btn primary big" type="button" data-i18n="motion.button">Narxni bilish</button>
+      <p id="motion-error" class="muted small err" hidden></p>
+
+      <div id="motion-results" class="results" aria-live="polite">
+        <div class="empty">
+          <p><strong data-i18n="motion.empty.title">Hali natija yo'q</strong></p>
+          <p class="muted" data-i18n="motion.empty.body">Rasm va video havolasini kiritib boshlang</p>
         </div>
       </div>
     </section>
@@ -179,6 +241,11 @@
         <div id="avatar-res-chips" class="chips"></div>
       </div>
 
+      <label class="consent-row">
+        <input id="avatar-consent" type="checkbox">
+        <span data-i18n="avatar.consent">Bu mening o'z rasmim, yoki men tasvirlangan insonning ruxsatiga egaman</span>
+      </label>
+
       <button id="btn-avatar" class="btn primary big" type="button" data-i18n="avatar.button">Narxni bilish</button>
       <p id="avatar-error" class="muted small err" hidden></p>
     </section>
@@ -191,6 +258,7 @@
           <p class="muted" data-i18n="avatar.result.subtitle">Ko'ring va yuklab oling</p>
         </div>
       </div>
+      <p class="muted small" data-i18n="avatar.disclosure">Bu video sun'iy intellekt tomonidan yaratilgan.</p>
       <div id="avatar-results" class="results" aria-live="polite">
         <div class="empty">
           <p><strong data-i18n="avatar.empty.title">Hali avatar yo'q</strong></p>
@@ -205,6 +273,13 @@
     <h2 data-i18n="history.title">Mening videolarim</h2>
     <p class="muted" data-i18n="history.subtitle">Barcha yaratganlaringiz, eng yangisidan boshlab</p>
     <div id="history-list" class="results"></div>
+  </section>
+
+  <!-- ============ GALLERY ============ -->
+  <section id="view-gallery" class="view" hidden>
+    <h2 data-i18n="gallery.title">Galereya</h2>
+    <p class="muted" data-i18n="gallery.subtitle">Foydalanuvchilar ommaviy qilgan ishlar</p>
+    <div id="gallery-list" class="results"></div>
   </section>
 
   <!-- ============ MCP / API ============ -->
@@ -318,6 +393,61 @@
   </div>
 </div>
 
+<!-- New character (saved identity reused across shots) -->
+<div id="character-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="character-modal-title">
+    <h3 id="character-modal-title" data-i18n="character.modal.title">Yangi personaj</h3>
+    <p class="muted small" data-i18n="character.modal.subtitle">Bu personaj barcha kadrlaringizda bir xil ko'rinadi.</p>
+
+    <label class="field">
+      <span class="label" data-i18n="character.name">Nomi</span>
+      <input id="character-name" type="text" class="big-input" maxlength="80">
+    </label>
+    <label class="field">
+      <span class="label" data-i18n="character.lockText">Tavsif (yuzi, kiyimi, o'ziga xosligi)</span>
+      <textarea id="character-lock-text" rows="3" class="big-input" data-i18n-placeholder="character.lockText.placeholder"></textarea>
+    </label>
+
+    <div class="upload-row">
+      <label class="btn ghost upload-btn">
+        <input id="character-ref-upload" type="file" accept="image/*" multiple hidden>
+        <span data-i18n="character.uploadRefs">Namuna rasmlar (1-4 ta)</span>
+      </label>
+    </div>
+    <div id="character-ref-previews" class="character-ref-previews"></div>
+
+    <p id="character-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="character-cancel" class="btn ghost" type="button" data-i18n="character.cancel">Bekor qilish</button>
+      <button id="character-save" class="btn primary big" type="button" data-i18n="character.save">Saqlash</button>
+    </div>
+  </div>
+</div>
+
+<!-- Credit top-up: choose an amount, then a payment provider -->
+<div id="topup-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="topup-title">
+    <h3 id="topup-title" data-i18n="topup.title">Balansni to'ldirish</h3>
+    <p class="muted small" data-i18n="topup.subtitle">Miqdorni tanlang, so'ng to'lov usulini tanlang.</p>
+
+    <label class="field">
+      <span class="label" data-i18n="topup.amount">Miqdor (USD)</span>
+      <input id="topup-amount" type="number" inputmode="decimal" min="1" max="1000" step="1" class="big-input" value="10">
+    </label>
+
+    <div class="chip-row">
+      <span class="chip-label" data-i18n="topup.provider">To'lov usuli</span>
+      <div id="topup-provider-chips" class="chips"></div>
+    </div>
+
+    <p id="topup-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="topup-cancel" class="btn ghost" type="button" data-i18n="topup.cancel">Bekor qilish</button>
+      <button id="topup-submit" class="btn primary big" type="button" data-i18n="topup.button">To'ldirish</button>
+    </div>
+  </div>
+</div>
+
 <!-- Post-production: upscale / lip-sync / subtitles / background removal -->
 <div id="postprod-modal" class="modal-backdrop" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="postprod-title">
@@ -336,6 +466,23 @@
     <div class="modal-actions">
       <button id="postprod-cancel" class="btn ghost" type="button" data-i18n="postprod.cancel">Bekor qilish</button>
       <button id="postprod-quote" class="btn primary big" type="button" data-i18n="postprod.getprice">Narxni bilish</button>
+    </div>
+  </div>
+</div>
+
+<!-- Report a gallery item -->
+<div id="report-modal" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="report-title">
+    <h3 id="report-title" data-i18n="report.title">Shikoyat qilish</h3>
+    <p class="muted small" data-i18n="report.subtitle">Bu video kimningdir roziligisiz suratini ishlatgan bo'lsa yoki boshqa muammo bo'lsa, bizga xabar bering.</p>
+    <label class="field">
+      <span class="label" data-i18n="report.reason">Sabab</span>
+      <textarea id="report-reason" rows="3" class="big-input" data-i18n-placeholder="report.reason.placeholder"></textarea>
+    </label>
+    <p id="report-error" class="muted small err" hidden></p>
+    <div class="modal-actions">
+      <button id="report-cancel" class="btn ghost" type="button" data-i18n="report.cancel">Bekor qilish</button>
+      <button id="report-submit" class="btn primary big" type="button" data-i18n="report.submit">Yuborish</button>
     </div>
   </div>
 </div>

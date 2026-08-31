@@ -16,9 +16,10 @@ No install step, no dependencies — stdlib only, same constraint as the CLI.
 ### Access control (recommended before exposing this on a real server)
 
 **Generating anything now always requires a signed-in user** — see "Multi-user
-mode" below. There is no single-tenant bypass any more: `_require_funded_user()`
-in `webapp/server.py` is the one gate every paid endpoint (image, video,
-post-production, avatar) calls through, and it rejects an unauthenticated
+mode" below. There is no single-tenant bypass any more: `_current_user_or_raise()` +
+`_reserve_funds()` in `webapp/server.py` is the one gate every paid endpoint
+(image, video, post-production, avatar, motion transfer) calls through, and
+it rejects an unauthenticated
 request unconditionally, whether it came from the browser UI or from the MCP
 server (itself just another caller of this same HTTP API). Leaving
 `SUPABASE_*` unset means nobody can generate at all, not that generation is
@@ -45,17 +46,25 @@ Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` (plus `SUPABASE_SERVICE_ROLE_KEY`
 to allow spending) in `.env` and the app switches from single-tenant to
 multi-user: a sign-in bar appears, each account gets its own job history and
 credit balance, and every paid generation is billed against that balance
-instead of running open-ended. Leave all three unset and the app behaves
-exactly as it did before this existed — no login, one shared workspace.
+instead of running open-ended. **Leave all three unset and the page and job
+history still load, but nobody — including the deployment's own owner — can
+generate anything**; there is no single-tenant "no login, spend for free"
+mode any more (see "Access control" above and "How the money gate works"
+below).
 
 1. Apply `02-multiuser-schema.sql` to your Supabase project (adds
    `owner_id` columns plus the `credits` / `credit_ledger` tables and their
-   RLS policies — see that file's comments for the design).
+   RLS policies), then `04-atomic-credits.sql` (adds the reservation table
+   and the `reserve_credit`/`capture_credit_reservation`/
+   `release_credit_reservation`/`refund_credit`/`debit_credit` functions
+   every paid action and top-up now goes through — see that file's
+   comments for the design).
 2. Fill in the three `SUPABASE_*` values from Project Settings → API.
-3. Grant a new user credit with `supabase_client.record_spend(user_id,
-   +5.00, note="manual top-up")` (there is no self-serve payment flow yet —
-   see "Deliberate limits" below) or an equivalent insert into
-   `credit_ledger` / `credits` from the Supabase SQL editor.
+3. Either let users top themselves up (see "Payments" below), or grant
+   credit by hand with `python3 -c "import ledger; ledger.SupabaseLedger().refund('USER_ID', 5.00, 'manual:some-unique-key', note='manual top-up')"`
+   (run from `webapp/`, with `SUPABASE_*` set in the environment) or an
+   equivalent insert into `credit_ledger` / `credits` from the Supabase
+   SQL editor.
 4. Restart the server. `/api/health`'s `auth_enabled` flag reports whether
    the UI is in multi-user mode.
 
@@ -140,6 +149,83 @@ Results land in History as an "Enhanced (op)" card once done. Multi-shot
 continuity (`final --shots-json`) is a CLI-only, authoring-time decision
 (you choose it before generating, not after) and isn't exposed here.
 
+### Consent, disclosure, and moderation (talking avatar / motion transfer)
+
+Both features that animate a photo of a specific person — the talking
+avatar and motion transfer — require an explicit consent attestation
+before they'll run at all: `POST /api/avatar/run` and
+`POST /api/motion-transfer/run` reject the request unless the body
+includes `consent_attested: true` and `consent_type` set to `"self"` or
+`"authorized"` (`_require_identity_consent` in `webapp/server.py`). The
+web UI's checkbox on both panels ("This is my own photo, or I have the
+pictured person's permission") sends `consent_type: "authorized"`, the
+more general of the two values a single checkbox can honestly represent.
+This does **not** verify the claim — it makes generating without at
+least claiming consent impossible through this API, and the attestation
+is stored on the job record (`consent_type`, `consent_at`) as a durable
+trail to point to if a report comes in later.
+
+Three more pieces close this out:
+
+- **Abuse rate limit.** Avatar generation is capped separately from every
+  other paid endpoint and from the money-cost gate itself
+  (`AVATAR_RATE_LIMIT`, default 10/day per account, `AVATAR_RATE_WINDOW`)
+  — a funded account is not, on its own, a reason to allow mass
+  production of videos of other people's likeness.
+- **Disclosure.** Every avatar output gets a small "AI-generated"
+  watermark burned in via ffmpeg (`_burn_avatar_disclosure`) before it's
+  handed back — best-effort: if the font isn't installed (see the
+  Dockerfile's `fonts-dejavu-core`) or the burn fails for any reason, the
+  job still completes using the original, unwatermarked output rather
+  than failing a paid generation over a disclosure step, and
+  `job.disclosure` records which outcome happened (`"watermarked"` or
+  `"label-only"`). The UI's own on-screen disclosure text is shown either
+  way.
+- **Reporting.** Any gallery item can be reported — `POST
+  /api/jobs/<id>/report` with a `reason`, deliberately no sign-in
+  required (the person whose likeness was used without consent is often
+  not the account that generated it). Reporting immediately unpublishes
+  the job from the gallery and appends an entry to
+  `webapp_reports.jsonl`. There is no admin review UI at this project's
+  stage — an operator reviews that file directly and decides on further
+  action (removing the underlying media, contacting the account, etc.).
+
+### Payments — letting users top up their own balance
+
+A signed-in user can add credit to their own balance from the "Top up"
+button next to it, instead of you granting credit by hand. Three providers
+are supported, each entirely opt-in via its own env vars (see
+`.env.example`): **Stripe** (card payments, works anywhere), **Payme**, and
+**Click** (the two common Uzbek payment services). The "Top up" button only
+shows the providers whose env vars are actually set — `GET /api/config`'s
+`topup.providers` list reflects that, so an unconfigured provider is simply
+absent from the UI rather than shown broken.
+
+How a top-up works: `POST /api/topup/create` records a pending top-up and
+asks the chosen provider for a checkout URL, then the browser is sent there.
+The account is **not** credited at that point — only the provider's own
+webhook, called back to this server independently of the browser, credits
+it (`POST /api/topup/stripe/webhook`, `/api/topup/payme`,
+`/api/topup/click/prepare` + `/api/topup/click/complete`). This means a
+closed tab or a cancelled payment never leaves a half-finished charge: the
+balance only moves once the provider itself confirms the money arrived.
+Crediting is idempotent — a provider retrying its webhook (all three do)
+never double-credits.
+
+Payme and Click bill in UZS; this project's balances are USD, so
+`USD_TO_UZS_RATE` (a plain number, so'm per dollar) must be set for either
+of them to work, with no built-in fallback — you set the rate, so nobody is
+ever charged against a stale one baked into the code.
+
+**Verification status**: Stripe's implementation was built against Stripe's
+own, reachable API docs and its protocol is stable — reasonably safe to
+trust as-is once real keys are in place. Payme and Click could not be
+verified against their official docs from the environment this was built
+in (both doc domains were unreachable there), so their implementations were
+reconstructed from secondary sources and cross-referenced for consistency,
+but are **not yet confirmed correct**. See `PAYMENTS.md` at the repo root
+for exactly what to check before relying on either of them with real money.
+
 ## How the money gate works
 
 The CLI refuses to run a paid call unless `--i-approve-cost` matches the real
@@ -157,12 +243,13 @@ the server quoted.
 ## Security notes
 
 - **Every paid endpoint requires a signed-in user, unconditionally.**
-  `_require_funded_user()` in `webapp/server.py` is the single gate image,
-  video, post-production, and avatar generation all call through, and it
-  now rejects a request with no verified session no matter what mode the
-  deployment is in — there is no single-tenant/LOCAL_OWNER bypass for
-  spending money any more. This also covers the MCP server (`mcp/server.py`),
-  since it's just another HTTP caller of this same API.
+  `_current_user_or_raise()` + `_reserve_funds()` in `webapp/server.py` is
+  the gate image, video, post-production, motion transfer, and avatar
+  generation all call through, and it now rejects a request with no
+  verified session no matter what mode the deployment is in — there is no
+  single-tenant/LOCAL_OWNER bypass for spending money any more. This also
+  covers the MCP server (`mcp/server.py`), since it's just another HTTP
+  caller of this same API.
 - **Security headers on every response.** `SECURITY_HEADERS` in
   `webapp/server.py` is sent from the one `_send()` method every response
   (static files, JSON, media) goes through: a strict `Content-Security-Policy`
@@ -192,7 +279,11 @@ the server quoted.
   signup, and the browser needs both to build the Google OAuth redirect
   itself.
 - `/media/` is confined to `work/` — paths are resolved and checked against
-  that root, so a crafted URL cannot read elsewhere on disk.
+  that root, so a crafted URL cannot read elsewhere on disk. Once Supabase
+  is configured it's also gated to the file's own owner (or an explicitly
+  published gallery item, see "Payments"/gallery notes) — a signed-in
+  user can't read another account's generated media just by knowing or
+  guessing its path.
 - Prompts are rendered as DOM text nodes, never `innerHTML`, so user text
   cannot inject markup.
 - The session cookie (`vf_session`, holding the Supabase access token) is
@@ -200,11 +291,14 @@ the server quoted.
   sent cross-site, plus `Secure` automatically whenever the request arrived
   over HTTPS (see `_is_https()` above) — no manual step needed behind a
   real TLS-terminating proxy (DEPLOY.md §5) or Railway's own domain.
-- `credits` and `credit_ledger` carry no client-writable RLS policy at all
-  (see `02-multiuser-schema.sql`) — the only way to move a balance is
-  `supabase_client.record_spend()` using the service role key, called
-  exclusively from the server after a generation actually succeeds. A user's
-  own token can only ever *read* their own balance.
+- `credits`, `credit_ledger`, and `credit_reservations` carry no
+  client-writable RLS policy at all (see `02-multiuser-schema.sql` and
+  `04-atomic-credits.sql`) — the only way to move a balance is the
+  `reserve_credit`/`capture_credit_reservation`/
+  `release_credit_reservation`/`refund_credit`/`debit_credit` Postgres
+  functions (`webapp/ledger.py`), called exclusively from the server with
+  the service role key. A user's own token can only ever *read* their own
+  balance and reservation history.
 - The pre-existing cost-confirmation gate is unchanged and still runs first:
   `approved_cost` must match the server-quoted price before a paid call is
   even attempted. The credit-balance check in multi-user mode is a second,
@@ -242,19 +336,20 @@ Multi-user mode is genuinely multi-tenant (per-user auth, per-user job
 history, per-user credit balance, real RLS on every table) but it is still
 an MVP, not a finished product:
 
-- **No self-serve payments.** Credits are granted by an admin running
-  `supabase_client.record_spend()` or a SQL insert by hand. See
-  `docs/startup-strategy.md` for the phased plan toward Payme/Click.
-- **No atomic balance updates, in two places.** `record_spend()` reads the
-  balance then writes it back (two round trips, not one SQL statement), and
-  separately `_require_funded_user()` checks the balance *before* a
-  generation runs while the actual deduction happens after it succeeds —
-  two concurrent requests from the same account can both pass the
-  pre-check against the same starting balance and spend past it. Fine for
-  an MVP's low concurrency per user; the real fix for both is the same one:
-  a single `SECURITY DEFINER` Postgres function that checks-and-deducts
-  atomically in one round trip, called instead of the current
-  read-then-write in `supabase_client.py`.
+- **Self-serve top-ups exist** (Stripe/Payme/Click, see the "Payments"
+  section above) alongside an admin granting credit by hand via a SQL
+  insert or `webapp/ledger.py`'s `refund()`.
+- **Balance updates are now atomic.** Every paid endpoint reserves the
+  cost via a `SECURITY DEFINER` Postgres function (`reserve_credit` in
+  `04-atomic-credits.sql`) *before* submitting to fal.ai — the row lock
+  inside that function's transaction is what makes two concurrent
+  requests from the same account correctly see each other's hold instead
+  of both passing a stale balance check. The reservation is captured
+  (turned into an actual charge) only after a validated, non-empty
+  result comes back, or released if generation fails — see
+  `webapp/ledger.py`'s module docstring for the full reserve → capture /
+  release flow and its idempotency-key protection against duplicate
+  requests double-charging.
 - **No password reset / email verification UI.** Whatever your Supabase
   project's auth settings do (e.g. requiring email confirmation) is what
   happens — the app surfaces Supabase's own message but adds no flow of its

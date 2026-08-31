@@ -18,13 +18,19 @@
     imageWasUploaded: false,
     activePreset: null,
     presetMotion: null,
+    selectedCameraMove: null,
     selectedSeconds: null,
     selectedModel: null,
     imageOnlyRefs: [],
+    characters: [],
+    selectedCharacterId: null,
+    characterRefs: [],
+    motionImageDataUrl: null,
     avatarResolution: "1080p",
     polls: new Map(),
     auth: { enabled: false, user: null, balance: null },
     authMode: "login",
+    selectedTopupProvider: null,
   };
 
   // ---------------------------------------------------------------- utils
@@ -123,6 +129,7 @@
       return;
     }
     renderPresets();
+    renderCameraChips();
     renderAspectSelect("aspect-select");
     renderAspectSelect("image-aspect-select");
     renderModelGrid();
@@ -130,12 +137,17 @@
     wireStaticControls();
     wireImageUpload();
     wireImageOnly();
+    wireCharacterModal();
+    wireMotionTransfer();
     wireAuth();
+    wireTopup();
     wirePostprod();
     wireAvatar();
+    wireReport();
     checkHealth();
     await checkAuth();
     loadHistory();
+    handleTopupRedirect();
   }
 
   function wireLangPicker() {
@@ -144,12 +156,14 @@
     picker.addEventListener("change", () => {
       setLang(picker.value);
       renderPresets();
+      renderCameraChips();
       renderAspectSelect("aspect-select");
       renderAspectSelect("image-aspect-select");
       renderModelGrid();
       renderAvatarResChips();
       renderAuthBar();
       renderHealthBadge();
+      if (state.config && !$("topup-modal").hidden) renderTopupProviderChips();
       if (state.config) updatePostprodParamsIfOpen();
       if (state.config && !$("view-mcp").hidden) renderMcpView();
     });
@@ -232,6 +246,7 @@
       state.auth = { enabled: false, user: null, balance: null };
     }
     renderAuthBar();
+    await loadCharacters();
   }
 
   function renderAuthBar() {
@@ -243,9 +258,13 @@
     bar.hidden = false;
     if (state.auth.user) {
       const balanceText = state.auth.balance === null ? "" : money(state.auth.balance);
+      const hasProviders = !!(state.config && state.config.topup && state.config.topup.providers.length);
       bar.replaceChildren(
         el("span", { class: "email", text: state.auth.user.email }),
         balanceText ? el("span", { class: "balance", text: balanceText }) : null,
+        hasProviders ? el("button", {
+          class: "btn ghost small", type: "button", text: t("topup.button"), onclick: openTopupModal,
+        }) : null,
         el("button", { class: "btn ghost small", type: "button", text: t("auth.signout"), onclick: signOut }));
     } else {
       bar.replaceChildren(
@@ -348,6 +367,112 @@
     loadHistory();
   }
 
+  // --------------------------------------------------------------- top-up
+
+  const TOPUP_PROVIDERS = [
+    { id: "stripe", labelKey: "topup.provider.stripe" },
+    { id: "payme", labelKey: "topup.provider.payme" },
+    { id: "click", labelKey: "topup.provider.click" },
+  ];
+
+  function wireTopup() {
+    $("topup-cancel").addEventListener("click", closeTopupModal);
+    $("topup-submit").addEventListener("click", submitTopup);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("topup-modal").hidden) closeTopupModal();
+    });
+  }
+
+  function renderTopupProviderChips() {
+    const configured = (state.config && state.config.topup && state.config.topup.providers) || [];
+    const wrap = $("topup-provider-chips");
+    wrap.replaceChildren(...TOPUP_PROVIDERS
+      .filter((p) => configured.includes(p.id))
+      .map((p) => el("button", {
+        class: "chip" + (p.id === state.selectedTopupProvider ? " is-active" : ""),
+        type: "button", "data-provider": p.id,
+        onclick: () => selectTopupProvider(p.id),
+      }, t(p.labelKey))));
+  }
+
+  function selectTopupProvider(id) {
+    state.selectedTopupProvider = id;
+    for (const chip of document.querySelectorAll("#topup-provider-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.provider === id);
+    }
+  }
+
+  function openTopupModal() {
+    if (!requireSignedIn()) return;
+    const configured = (state.config && state.config.topup && state.config.topup.providers) || [];
+    if (!configured.length) {
+      toast(t("topup.noProviders"), true);
+      return;
+    }
+    state.selectedTopupProvider = configured.length === 1 ? configured[0] : null;
+    renderTopupProviderChips();
+    $("topup-error").hidden = true;
+    $("topup-modal").hidden = false;
+    $("topup-amount").focus();
+  }
+
+  function closeTopupModal() {
+    $("topup-modal").hidden = true;
+  }
+
+  async function submitTopup() {
+    const errEl = $("topup-error");
+    errEl.hidden = true;
+    const amount = Number($("topup-amount").value);
+    if (!Number.isFinite(amount) || amount < 1 || amount > 1000) {
+      errEl.textContent = t("topup.error.amount");
+      errEl.hidden = false;
+      return;
+    }
+    if (!state.selectedTopupProvider) {
+      errEl.textContent = t("topup.error.provider");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("topup-submit");
+    btn.disabled = true;
+    try {
+      const result = await api("/api/topup/create", {
+        method: "POST",
+        body: JSON.stringify({
+          amount_usd: amount,
+          provider: state.selectedTopupProvider,
+          origin: window.location.origin,
+        }),
+      });
+      toast(t("topup.redirecting"));
+      window.location.href = result.redirect_url;
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      btn.disabled = false;
+    }
+  }
+
+  /* Stripe/Payme/Click all redirect the browser back here after payment --
+     this project's own return_url, not a webhook (the webhook is what
+     actually credits the account, server-side, independently of whether
+     the browser ever makes it back). This is purely cosmetic: tell the
+     user what happened and refresh the balance in case the webhook beat
+     the redirect (usually does for Stripe, may not yet for Payme/Click). */
+  function handleTopupRedirect() {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("topup");
+    if (!result) return;
+    history.replaceState(null, "", window.location.pathname);
+    if (result === "success") {
+      toast(t("topup.result.success"));
+      checkAuth();
+    } else if (result === "cancelled") {
+      toast(t("topup.result.cancelled"), true);
+    }
+  }
+
   // -------------------------------------------------------------- presets
 
   function presetLabel(preset) {
@@ -403,6 +528,11 @@
   function applyPreset(preset) {
     state.activePreset = preset.id;
     state.presetMotion = preset.motion;
+    // A preset and a camera-move chip both answer the same question
+    // ("how does this shot move") at different levels of detail -- picking
+    // one clears the other rather than trying to combine two motion
+    // instructions into one prompt.
+    deselectCameraMove();
     if (preset.seconds) {
       // The preset's `seconds` is a suggested length, not guaranteed to be
       // one of the currently-selected model's own valid options -- snap to
@@ -415,6 +545,61 @@
       btn.classList.toggle("is-active", btn.dataset.id === preset.id);
     }
     toast(`${presetLabel(preset).name} ${t("toast.presetApplied")}`);
+  }
+
+  // --------------------------------------------------------- camera moves
+
+  /* A tested, specific vocabulary (see fal-master-prompt.md section 3) --
+     one move, a magnitude, a duration, never stacked -- rather than vague
+     terms an image-to-video model interprets inconsistently. "held" is the
+     same ambient-motion fallback askForVideo() already used, expressed as
+     a selectable option instead of a hidden default, and its text is the
+     single source of truth motionPromptText() falls back to. Mutually
+     exclusive with presets (see applyPreset) -- both describe the same
+     "how does this shot move" choice, one raw, one as a named style. */
+  const CAMERA_MOVES = [
+    { id: "held", labelKey: "camera.held",
+      text: "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion throughout." },
+    { id: "pushin", labelKey: "camera.pushIn",
+      text: "Slow push in, 15% over the full duration. Subject stays still; no lighting change." },
+    { id: "pullout", labelKey: "camera.pullOut",
+      text: "Slow pull back, 20% over the full duration, revealing more of the scene." },
+    { id: "panleft", labelKey: "camera.panLeft",
+      text: "Gentle pan left, 10 degrees over the full duration." },
+    { id: "panright", labelKey: "camera.panRight",
+      text: "Gentle pan right, 10 degrees over the full duration." },
+    { id: "reveal", labelKey: "camera.reveal",
+      text: "Camera starts high looking down, then pushes in and drops to a low three-quarter angle, revealing the environment as it settles." },
+  ];
+
+  function renderCameraChips() {
+    const wrap = $("camera-chips");
+    wrap.replaceChildren(...CAMERA_MOVES.map((move) =>
+      el("button", {
+        class: "chip" + (move.id === state.selectedCameraMove ? " is-active" : ""),
+        type: "button", "data-move": move.id,
+        onclick: () => selectCameraMove(move.id),
+        text: t(move.labelKey),
+      })));
+  }
+
+  function selectCameraMove(id) {
+    state.selectedCameraMove = state.selectedCameraMove === id ? null : id;
+    state.activePreset = null;
+    state.presetMotion = null;
+    for (const chip of document.querySelectorAll("#camera-chips .chip")) {
+      chip.classList.toggle("is-active", chip.dataset.move === state.selectedCameraMove);
+    }
+    for (const btn of document.querySelectorAll("#presets .preset")) {
+      btn.classList.remove("is-active");
+    }
+  }
+
+  function deselectCameraMove() {
+    state.selectedCameraMove = null;
+    for (const chip of document.querySelectorAll("#camera-chips .chip")) {
+      chip.classList.remove("is-active");
+    }
   }
 
   // ------------------------------------------------- size (aspect ratio)
@@ -502,8 +687,10 @@
   function wireModePicker() {
     $("mode-image").addEventListener("click", () => enterMode("image"));
     $("mode-video").addEventListener("click", () => enterMode("video"));
+    $("mode-motion").addEventListener("click", () => enterMode("motion"));
     $("back-from-image").addEventListener("click", () => enterMode(null));
     $("back-from-video").addEventListener("click", () => enterMode(null));
+    $("back-from-motion").addEventListener("click", () => enterMode(null));
   }
 
   function enterMode(mode) {
@@ -511,6 +698,7 @@
     $("mode-picker").hidden = mode !== null;
     $("panel-image").hidden = mode !== "image";
     $("panel-video").hidden = mode !== "video";
+    $("panel-motion").hidden = mode !== "motion";
   }
 
   // --------------------------------------------------------- static wiring
@@ -658,6 +846,7 @@
     $("tab-create").addEventListener("click", () => switchView("create"));
     $("tab-avatar").addEventListener("click", () => switchView("avatar"));
     $("tab-history").addEventListener("click", () => switchView("history"));
+    $("tab-gallery").addEventListener("click", () => switchView("gallery"));
     $("tab-mcp").addEventListener("click", () => switchView("mcp"));
   }
 
@@ -665,12 +854,15 @@
     $("view-create").hidden = which !== "create";
     $("view-avatar").hidden = which !== "avatar";
     $("view-history").hidden = which !== "history";
+    $("view-gallery").hidden = which !== "gallery";
     $("view-mcp").hidden = which !== "mcp";
     $("tab-create").classList.toggle("is-active", which === "create");
     $("tab-avatar").classList.toggle("is-active", which === "avatar");
     $("tab-history").classList.toggle("is-active", which === "history");
+    $("tab-gallery").classList.toggle("is-active", which === "gallery");
     $("tab-mcp").classList.toggle("is-active", which === "mcp");
     if (which === "history") loadHistory();
+    if (which === "gallery") loadGallery();
     if (which === "mcp") renderMcpView();
   }
 
@@ -703,6 +895,161 @@
     state.polls.set(jobId, timer);
   }
 
+  // ----------------------------------------------------------- characters
+
+  /* A character is a saved identity (name + description + up to 4
+     reference photos) reused across shots -- feeds the same refs/lock-text
+     mechanism scripts/factory.py's CLI pipeline has always used
+     (CHARACTER_LOCK / IDENTITY_LOCK in templates.json), now reachable from
+     the web UI. Requires a real signed-in user: characters live in
+     Supabase's `characters` table (see 01-schema.sql /
+     03-characters-per-user.sql), which single-tenant/no-auth mode has no
+     access to at all -- the section stays hidden rather than showing a
+     feature that can't work. */
+  async function loadCharacters() {
+    if (!state.auth.user) {
+      state.characters = [];
+      state.selectedCharacterId = null;
+      renderCharacterChips();
+      return;
+    }
+    try {
+      const data = await api("/api/characters");
+      state.characters = data.characters || [];
+    } catch {
+      state.characters = [];
+    }
+    if (!state.characters.some((c) => c.id === state.selectedCharacterId)) {
+      state.selectedCharacterId = null;
+    }
+    renderCharacterChips();
+  }
+
+  function renderCharacterChips() {
+    const section = $("character-section");
+    if (!state.auth.user) {
+      section.hidden = true;
+      return;
+    }
+    section.hidden = false;
+    const wrap = $("character-chips");
+    wrap.replaceChildren(
+      ...state.characters.map((c) =>
+        el("button", {
+          class: "chip" + (c.id === state.selectedCharacterId ? " is-active" : ""),
+          type: "button", "data-id": c.id,
+          onclick: () => selectCharacter(c.id),
+          text: c.name,
+        })),
+      el("button", {
+        class: "chip add-character", type: "button",
+        onclick: openCharacterModal,
+        text: `+ ${t("character.addNew")}`,
+      }));
+  }
+
+  function selectCharacter(id) {
+    state.selectedCharacterId = state.selectedCharacterId === id ? null : id;
+    for (const chip of document.querySelectorAll("#character-chips .chip:not(.add-character)")) {
+      chip.classList.toggle("is-active", chip.dataset.id === state.selectedCharacterId);
+    }
+  }
+
+  function selectedCharacter() {
+    return state.characters.find((c) => c.id === state.selectedCharacterId) || null;
+  }
+
+  function openCharacterModal() {
+    state.characterRefs = [];
+    $("character-name").value = "";
+    $("character-lock-text").value = "";
+    $("character-ref-previews").replaceChildren();
+    $("character-error").hidden = true;
+    $("character-modal").hidden = false;
+    $("character-name").focus();
+  }
+
+  function closeCharacterModal() {
+    $("character-modal").hidden = true;
+  }
+
+  function renderCharacterRefPreviews() {
+    $("character-ref-previews").replaceChildren(...state.characterRefs.map((dataUrl, i) =>
+      el("div", { class: "character-ref-thumb" },
+        el("img", { src: dataUrl, alt: "" }),
+        el("button", {
+          type: "button", text: "×", "aria-label": t("character.removeRef"),
+          onclick: () => {
+            state.characterRefs.splice(i, 1);
+            renderCharacterRefPreviews();
+          },
+        }))));
+  }
+
+  function handleCharacterRefUpload(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    for (const file of files) {
+      if (state.characterRefs.length >= 4) {
+        toast(t("character.tooManyRefs"), true);
+        break;
+      }
+      if (!file.type.startsWith("image/")) {
+        toast(t("toast.notAnImage"), true);
+        continue;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        toast(t("toast.imageTooLarge"), true);
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        state.characterRefs.push(reader.result);
+        renderCharacterRefPreviews();
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  async function saveCharacter() {
+    const errEl = $("character-error");
+    errEl.hidden = true;
+    const name = $("character-name").value.trim();
+    const lockText = $("character-lock-text").value.trim();
+    if (!name || !lockText) {
+      errEl.textContent = t("character.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("character-save");
+    btn.disabled = true;
+    try {
+      const result = await api("/api/characters", {
+        method: "POST",
+        body: JSON.stringify({ name, lock_text: lockText, reference_urls: state.characterRefs }),
+      });
+      state.characters.unshift(result.character);
+      state.selectedCharacterId = result.character.id;
+      renderCharacterChips();
+      closeCharacterModal();
+      toast(t("character.saved"));
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function wireCharacterModal() {
+    $("character-ref-upload").addEventListener("change", handleCharacterRefUpload);
+    $("character-cancel").addEventListener("click", closeCharacterModal);
+    $("character-save").addEventListener("click", saveCharacter);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("character-modal").hidden) closeCharacterModal();
+    });
+  }
+
   // -------------------------------------------------------------- images
 
   /* The video panel's single action button: generate a starting frame
@@ -720,12 +1067,21 @@
   }
 
   async function generateImagesForVideo() {
-    const prompt = $("image-prompt").value.trim();
+    let prompt = $("image-prompt").value.trim();
     if (!prompt) {
       toast(t("toast.describeFirst"), true);
       $("image-prompt").focus();
       return;
     }
+
+    // A selected character's lock-text (what must stay the same -- face,
+    // wardrobe, distinguishing features) goes in front of the shot's own
+    // description, and its reference photos ride along as refs so the
+    // still-image model has something to match, not just words -- same
+    // refs/still_edit path an ad-hoc upload already used.
+    const character = selectedCharacter();
+    const refs = character ? character.reference_urls : [];
+    if (character) prompt = `${character.lock_text}. ${prompt}`;
 
     state.imageWasUploaded = false;
     const btn = $("btn-video-start");
@@ -736,7 +1092,7 @@
     try {
       const job = await api("/api/generate/image", {
         method: "POST",
-        body: JSON.stringify({ prompt, aspect: selectedAspectRatio("aspect-select") }),
+        body: JSON.stringify({ prompt, aspect: selectedAspectRatio("aspect-select"), refs }),
       });
       poll(job.id,
         (done) => {
@@ -807,8 +1163,9 @@
   function motionPromptText() {
     const prompt = $("image-prompt").value.trim();
     if (state.imageWasUploaded && prompt) return prompt;
-    return state.presetMotion
-      || "Camera holds, faint handheld presence, imperceptible drift; everyone in frame keeps small natural idle motion.";
+    const move = CAMERA_MOVES.find((m) => m.id === state.selectedCameraMove);
+    if (move) return move.text;
+    return state.presetMotion || CAMERA_MOVES[0].text; // CAMERA_MOVES[0] is "held" -- same ambient fallback as before
   }
 
   // -------------------------------------------------------------- video
@@ -874,6 +1231,7 @@
           seconds: quote.seconds,
           model: quote.model,
           approved_cost: quote.cost_usd,
+          pricing_version: quote.pricing_version,
         }),
       });
       poll(job.id,
@@ -1028,7 +1386,7 @@
 
     list.replaceChildren(...done.slice(0, 40).map((job) => {
       const url = (job.outputs || [])[0];
-      const isVideo = job.kind === "video" || job.kind === "postprod" || job.kind === "avatar";
+      const isVideo = job.kind === "video" || job.kind === "postprod" || job.kind === "avatar" || job.kind === "motion_transfer";
       const media = job.status === "error"
         ? el("div", { class: "card-body" },
             el("span", { class: "badge err", text: t("history.failed") }))
@@ -1037,6 +1395,7 @@
           : el("img", { src: url, alt: "", loading: "lazy" });
       const label = job.kind === "postprod" ? t("step4.enhance")
         : job.kind === "avatar" ? t("nav.avatar")
+        : job.kind === "motion_transfer" ? t("mode.motion.title")
         : job.kind === "video" ? t("history.badge.video") : t("history.badge.image");
 
       return el("div", { class: "card" },
@@ -1049,11 +1408,126 @@
                                             onclick: () => openPostprodModal(url) }) : null,
           url ? el("a", { class: "dl", href: url, download: "", target: "_blank",
                           rel: "noopener", text: t("step4.download") }) : null),
+        job.status === "done" && url
+          ? el("div", { class: "card-body" },
+              el("span", { class: "spacer" }),
+              el("button", {
+                class: "btn ghost small" + (job.public ? " is-active" : ""), type: "button",
+                text: t(job.public ? "gallery.unpublish" : "gallery.publish"),
+                onclick: (e) => togglePublish(job, e.currentTarget),
+              }))
+          : null,
         job.status === "error"
           ? el("div", { class: "card-body" },
               el("span", { class: "muted small", text: translateApiError(job.error) || t("history.failed") }))
           : null);
     }));
+  }
+
+  async function togglePublish(job, btn) {
+    btn.disabled = true;
+    try {
+      const result = await api(`/api/jobs/${job.id}/publish`, {
+        method: "POST",
+        body: JSON.stringify({ public: !job.public }),
+      });
+      job.public = result.public;
+      btn.textContent = t(job.public ? "gallery.unpublish" : "gallery.publish");
+      btn.classList.toggle("is-active", job.public);
+      toast(t(job.public ? "gallery.published" : "gallery.unpublished"));
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // -------------------------------------------------------------- gallery
+
+  /* Public, opt-in only -- a job shows up here exactly because its owner
+     clicked "Publish" on it in their own history (see togglePublish). No
+     sign-in required to browse: this is public content by the owner's own
+     choice, same as any other public feed. /api/gallery strips owner_id
+     and cost_usd server-side before this ever sees a row. */
+  async function loadGallery() {
+    const list = $("gallery-list");
+    let data;
+    try {
+      data = await api("/api/gallery");
+    } catch {
+      setPanel(list, errorPanel(t("history.failed"), loadGallery));
+      return;
+    }
+    const jobs = data.jobs || [];
+    if (!jobs.length) {
+      setPanel(list, emptyPanel("gallery.empty.title", "gallery.empty.body"));
+      return;
+    }
+    list.replaceChildren(...jobs.map((job) => {
+      const url = (job.outputs || [])[0];
+      const isVideo = job.kind !== "image";
+      const media = isVideo
+        ? el("video", { src: url, controls: "", playsinline: "", preload: "metadata" })
+        : el("img", { src: url, alt: "", loading: "lazy" });
+      return el("div", { class: "card" }, media,
+        el("div", { class: "card-body" },
+          el("span", { class: "spacer" }),
+          el("button", {
+            class: "btn ghost small", type: "button",
+            onclick: () => openReportModal(job.id), text: t("report.button"),
+          })));
+    }));
+  }
+
+  // -------------------------------------------------------- report a job
+
+  let reportingJobId = null;
+
+  function wireReport() {
+    $("report-cancel").addEventListener("click", closeReportModal);
+    $("report-submit").addEventListener("click", submitReport);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("report-modal").hidden) closeReportModal();
+    });
+  }
+
+  function openReportModal(jobId) {
+    reportingJobId = jobId;
+    $("report-reason").value = "";
+    $("report-error").hidden = true;
+    $("report-modal").hidden = false;
+    $("report-reason").focus();
+  }
+
+  function closeReportModal() {
+    $("report-modal").hidden = true;
+    reportingJobId = null;
+  }
+
+  async function submitReport() {
+    const errEl = $("report-error");
+    const reason = $("report-reason").value.trim();
+    if (!reason) {
+      errEl.textContent = t("report.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    const btn = $("report-submit");
+    btn.disabled = true;
+    try {
+      await api(`/api/jobs/${encodeURIComponent(reportingJobId)}/report`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      closeReportModal();
+      toast(t("report.received"));
+      loadGallery();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // ------------------------------------------------------- post-production
@@ -1166,7 +1640,10 @@
     try {
       const job = await api("/api/postprod/run", {
         method: "POST",
-        body: JSON.stringify({ op, file_url: fileUrl, ...params, approved_cost: quote.cost_usd }),
+        body: JSON.stringify({
+          op, file_url: fileUrl, ...params,
+          approved_cost: quote.cost_usd, pricing_version: quote.pricing_version,
+        }),
       });
       poll(job.id,
         (done) => {
@@ -1225,6 +1702,11 @@
       errEl.hidden = false;
       return;
     }
+    if (!$("avatar-consent").checked) {
+      errEl.textContent = t("avatar.error.consent");
+      errEl.hidden = false;
+      return;
+    }
     const prompt = $("avatar-prompt").value.trim();
     let quote;
     try {
@@ -1250,6 +1732,12 @@
       const body = {
         image_url: imageUrl, audio_url: audioUrl,
         resolution: state.avatarResolution, approved_cost: quote.cost_usd,
+        pricing_version: quote.pricing_version,
+        // The checkbox is a single combined attestation ("it's mine, or I
+        // have permission") rather than two separate self/authorized
+        // options -- "authorized" is the more general of the two values
+        // the server accepts, so it's what a single checkbox maps to.
+        consent_attested: true, consent_type: "authorized",
       };
       if (prompt) body.prompt = prompt;
       const job = await api("/api/avatar/run", { method: "POST", body: JSON.stringify(body) });
@@ -1281,6 +1769,125 @@
       return;
     }
     setPanel($("avatar-results"),
+      el("div", { class: "card" },
+        el("video", { src: url, controls: "", playsinline: "", preload: "metadata" }),
+        el("div", { class: "card-body" },
+          el("span", { class: "badge ok", text: money(job.cost_usd || 0) }),
+          el("span", { class: "spacer" }),
+          el("a", { class: "dl", href: url, download: "", target: "_blank",
+                    rel: "noopener", text: t("step4.download") }))));
+  }
+
+  // ----------------------------------- motion transfer (video's motion -> a photo)
+
+  /* fal-ai/kling-video/v2.6/standard/motion-control -- applies a reference
+     video's movement to a static character photo (see
+     scripts/config.json's _motion_transfer_note). Same quote-then-confirm
+     shape as avatar: the video can be large, so it's a URL field rather
+     than an upload (unlike the character photo, which is small enough to
+     go as a data: URI the same way every other photo upload in this file
+     does). */
+  function wireMotionTransfer() {
+    $("motion-image-upload").addEventListener("change", handleMotionImageUpload);
+    $("btn-motion").addEventListener("click", quoteMotionTransfer);
+  }
+
+  function handleMotionImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast(t("toast.notAnImage"), true);
+      e.target.value = "";
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      toast(t("toast.imageTooLarge"), true);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.motionImageDataUrl = reader.result;
+      $("motion-image-filename").textContent = file.name;
+    };
+    reader.onerror = () => toast(t("common.connectError"), true);
+    reader.readAsDataURL(file);
+  }
+
+  async function quoteMotionTransfer() {
+    if (!requireSignedIn()) return;
+    const errEl = $("motion-error");
+    errEl.hidden = true;
+    const imageUrl = state.motionImageDataUrl;
+    const videoUrl = $("motion-video-url").value.trim();
+    if (!imageUrl || !videoUrl) {
+      errEl.textContent = t("motion.error.required");
+      errEl.hidden = false;
+      return;
+    }
+    if (!$("motion-consent").checked) {
+      errEl.textContent = t("avatar.error.consent");
+      errEl.hidden = false;
+      return;
+    }
+    const prompt = $("motion-prompt").value.trim();
+    let quote;
+    try {
+      quote = await api("/api/motion-transfer/quote", {
+        method: "POST",
+        body: JSON.stringify({ image_url: imageUrl, video_url: videoUrl }),
+      });
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      return;
+    }
+    $("confirm-cost").textContent = money(quote.cost_usd);
+    $("confirm-detail").textContent = "";
+    openConfirm(() => runMotionTransfer(imageUrl, videoUrl, prompt, quote));
+  }
+
+  async function runMotionTransfer(imageUrl, videoUrl, prompt, quote) {
+    const btn = $("btn-motion");
+    btn.disabled = true;
+    setPanel($("motion-results"), workingPanel());
+    try {
+      const body = {
+        image_url: imageUrl, video_url: videoUrl,
+        approved_cost: quote.cost_usd, pricing_version: quote.pricing_version,
+        consent_attested: true, consent_type: "authorized",
+      };
+      if (prompt) body.prompt = prompt;
+      const job = await api("/api/motion-transfer/run", { method: "POST", body: JSON.stringify(body) });
+      poll(job.id,
+        (done) => {
+          btn.disabled = false;
+          if (done.status === "error") {
+            setPanel($("motion-results"), errorPanel(translateApiError(done.error),
+              () => runMotionTransfer(imageUrl, videoUrl, prompt, quote)));
+            return;
+          }
+          renderMotionResult(done);
+          loadHistory();
+          checkAuth();
+          toast(t("toast.videoReady"));
+        },
+        () => setPanel($("motion-results"), workingPanel()));
+    } catch (err) {
+      btn.disabled = false;
+      setPanel($("motion-results"), errorPanel(err.message,
+        () => runMotionTransfer(imageUrl, videoUrl, prompt, quote)));
+    }
+  }
+
+  function renderMotionResult(job) {
+    const url = (job.outputs || [])[0];
+    if (!url) {
+      setPanel($("motion-results"), el("div", { class: "empty" },
+        el("p", {}, el("strong", { text: t("toast.noVideo") }))));
+      return;
+    }
+    setPanel($("motion-results"),
       el("div", { class: "card" },
         el("video", { src: url, controls: "", playsinline: "", preload: "metadata" }),
         el("div", { class: "card-body" },

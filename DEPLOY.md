@@ -9,14 +9,16 @@ none of this — see `webapp/README.md`.
 | Variable | Required | Purpose |
 |---|---|---|
 | `FAL_KEY` | Yes | fal.ai API key. Without it the server boots but every generation fails. |
-| `WEBAPP_BASIC_AUTH_USER` / `WEBAPP_BASIC_AUTH_PASS` | Recommended for single-tenant mode | Gates every request behind HTTP Basic Auth. See webapp/README.md's "Access control". |
-| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | Optional | Switches to real multi-user mode (per-account login, credit balances). See webapp/README.md. |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | **Required for anyone to generate anything** | Every paid endpoint (image, video, post-production, avatar, motion transfer, top-up) unconditionally requires a signed-in Supabase user — there is no single-tenant/no-login mode that can spend money any more. Without these three set, the page and job history still load, but every generation request is rejected with "Sign in to generate." See webapp/README.md's "Access control". |
+| `WEBAPP_BASIC_AUTH_USER` / `WEBAPP_BASIC_AUTH_PASS` | Recommended, in addition to Supabase | An extra HTTP Basic Auth layer in front of the whole app (including the login page itself) — useful for a private beta, not a substitute for Supabase. It does **not** satisfy the sign-in requirement above; a visitor who gets past Basic Auth still has to create an account and be funded before anything paid will run. |
 
-At least one of **Basic Auth** or **Supabase multi-user mode** should be
-set before this is reachable from outside your own network — plain
-single-tenant mode with neither has no access control at all, and the
-server prints a startup warning if it detects that combination on a
-non-local bind address.
+Deploying without `SUPABASE_*` set is only useful for demoing the UI and
+job history — nobody, including you, can generate anything until those
+three are set (see webapp/README.md's "Access control" and the "How the
+money gate works" section). Basic Auth is optional hardening on top of
+that, not an alternative to it; the server prints a startup warning if
+it's bound to a non-local address with neither Basic Auth nor Supabase
+configured.
 
 ## 2. Run it: Docker (recommended)
 
@@ -155,6 +157,11 @@ curl -u admin:yourpassword https://your-domain.com/api/health
   which already includes it.
 - A 401 with no credentials confirms Basic Auth is actually gating the
   server, not just configured.
+
+`MAX_CONCURRENT_JOBS` (optional, default 8) caps how many paid
+generations run at once in this process — a burst of requests beyond
+that queues instead of spawning unbounded provider calls. Raise it on a
+bigger instance, lower it if fal.ai rate-limits this key under load.
 
 Then run one real, cheap generation through the UI (or `/api/generate/image`
 with a 1-image count) to confirm the deployed server can actually reach

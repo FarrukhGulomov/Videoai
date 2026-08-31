@@ -1,6 +1,9 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
+  "pricing_version": 1,
+  "_pricing_version_note": "Bump this integer any time a rate, markup, or pricing rule below actually changes. webapp/server.py's quote endpoints echo it back; the generate endpoints check it against a client-supplied pricing_version (when present) the same way they already check approved_cost -- a stale quote from before a bump is rejected with a clear 're-quote' error instead of silently running at whatever this process's current rate happens to be. Since CONFIG is loaded once per process (see factory.load_config()), this mainly guards a browser tab left open across a redeploy, not a live race within one process's lifetime.",
+
   "pricing": {
     "customer_markup_multiplier": 1.12,
     "_note": "Applied ONLY in webapp/server.py, to every customer-facing price: quotes, the confirm dialog, credit-balance charges, and (since mcp/server.py talks to the webapp's own API rather than reading this file) MCP tool output too. scripts/factory.py's CLI always shows the real wholesale fal.ai rate unchanged -- it's the operator's own tool against their own fal.ai balance, not a customer-facing surface, so there's nothing to mark up there. work/generations.jsonl (the internal spend ledger) always logs both numbers -- cost_usd stays the real wholesale spend (unchanged meaning from before this existed), customer_charged_usd is what was actually billed -- so margin is visible internally without touching this file. 1.12 (a 12% margin) is a deliberately thin, growth-stage price -- picked so the product can compete on price against Higgsfield/Montage.ai while the user base is small, not to maximize margin per video yet. Change this one number to change profit margin; nothing else needs editing."
@@ -21,6 +24,7 @@
     "final_take_alt_hailuo":    "fal-ai/minimax/hailuo-02/standard/image-to-video",
     "final_take_alt_pixverse":  "fal-ai/pixverse/v6/image-to-video",
     "avatar":     "fal-ai/bytedance/omnihuman/v1.5",
+    "motion_transfer": "fal-ai/kling-video/v2.6/standard/motion-control",
     "upscale":    "fal-ai/topaz/upscale/video",
     "lipsync":    "fal-ai/sync-lipsync/v3",
     "transcribe": "fal-ai/wizper",
@@ -31,6 +35,7 @@
     "still_per_image_usd":       0.15,
     "motion_test_per_second_usd": 0.03,
     "avatar_per_second_usd": 0.16,
+    "motion_transfer_per_second_usd": 0.07,
     "final_take_per_second_usd_by_model": {
       "fal-ai/kling-video/v3/standard/image-to-video": 0.126,
       "fal-ai/veo3.1/image-to-video": 0.15,
@@ -51,7 +56,8 @@
     "lipsync_per_second_usd": 0.1333,
     "transcription_per_second_usd": 0.0008,
     "bg_remove_per_second_usd": 0.0042,
-    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue)."
+    "_post_production_note": "lipsync_per_second_usd ($8/min = ~$0.1333/s) and bg_remove_per_second_usd ($0.0042/s) are both confirmed directly on their model's own fal.ai page ('Your request will cost $X per second'). transcription_per_second_usd is NOT confirmed on fal-ai/wizper's docs page (checked; not shown there) -- it's a conservative estimate from third-party aggregator data on fal's Whisper-family pricing. Verify it against your fal.ai dashboard invoice after the first real subtitles run and correct this number if it's off; the absolute cost is small regardless (a few cents for a whole film's dialogue).",
+    "_motion_transfer_note": "fal-ai/kling-video/v2.6/standard/motion-control's own pricing panel confirms 'Your request will cost $0.07 per second' -- billed by the SOURCE video's duration (probed via ffprobe, same as lipsync/avatar), not the output. This is the cost-effective 'standard' tier (good for portraits/simple animations, character_orientation='video' matches the reference video's framing, max ~30s); the pricier v3/pro tier (complex choreography) isn't wired here -- add it as a second model id the same way final_take's alt models work if that quality level is ever needed."
   },
 
   "defaults": {

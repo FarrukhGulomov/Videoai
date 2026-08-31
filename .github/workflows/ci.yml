@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Stdlib-only project (see webapp/server.py's own docstring) --
+      # no pip install step needed for the app itself.
+      - name: Syntax-check every tracked Python file
+        run: |
+          set -e
+          git ls-files '*.py' | xargs -n1 python3 -m py_compile
+
+      - name: Validate JSON config files
+        run: |
+          set -e
+          python3 -c "import json; json.load(open('scripts/config.json'))"
+
+      - name: Run tests
+        working-directory: .
+        run: python3 -m unittest discover -s webapp/tests -p "test_*.py" -v
+
+  sql-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanity-check SQL migrations are non-empty and parse-ish
+        run: |
+          set -e
+          for f in 01-schema.sql 02-multiuser-schema.sql 03-characters-per-user.sql 04-atomic-credits.sql; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f is missing or empty"
+              exit 1
+            fi
+          done
+          echo "All expected SQL migrations are present and non-empty."

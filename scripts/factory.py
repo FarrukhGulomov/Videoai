@@ -164,22 +164,35 @@ def fal_headers():
     return {"Authorization": f"Key {fal_key()}"}
 
 
-def fal_run(model_id, payload, poll_seconds=5, max_wait=900):
-    """Submit to the fal queue and block until it finishes. Returns the result dict."""
+def fal_submit(model_id, payload):
+    """Submit to the fal queue and return the handle immediately -- no
+    waiting. Split out of fal_run() so a caller that wants to persist the
+    handle before blocking on the result can (see webapp/server.py's job
+    workers): once this returns, the request already exists on fal's side,
+    so status_url/response_url are enough to resume tracking it even if
+    this process dies before fal_poll() below returns."""
     submit_url = f"{FAL_QUEUE}/{model_id}"
     job = http(submit_url, method="POST", body=payload, headers=fal_headers())
-
     status_url = job.get("status_url")
     response_url = job.get("response_url")
     request_id = job.get("request_id")
     if not status_url or not response_url:
         raise RuntimeError(f"fal did not return a queue handle: {json.dumps(job)[:600]}")
-
     print(f"  queued: {request_id}", file=sys.stderr)
+    return {"status_url": status_url, "response_url": response_url, "request_id": request_id}
+
+
+def fal_poll(handle, poll_seconds=5, max_wait=900):
+    """Block until the fal queue job referenced by `handle` (from
+    fal_submit()) finishes, and return the result dict. Only reads status
+    from fal -- safe to call again on a handle from a previous process
+    life (e.g. after a server restart) to resume waiting on the same
+    in-flight request instead of losing track of it."""
+    status_url = handle["status_url"]
+    response_url = handle["response_url"]
+    request_id = handle.get("request_id")
     waited = 0
     while waited < max_wait:
-        time.sleep(poll_seconds)
-        waited += poll_seconds
         state = http(status_url, headers=fal_headers())
         status = state.get("status")
         if status == "COMPLETED":
@@ -187,12 +200,22 @@ def fal_run(model_id, payload, poll_seconds=5, max_wait=900):
         if status in ("FAILED", "ERROR", "CANCELLED"):
             raise RuntimeError(f"fal job {status}: {json.dumps(state)[:800]}")
         print(f"  {status or 'WAITING'} ({waited}s)", file=sys.stderr)
+        time.sleep(poll_seconds)
+        waited += poll_seconds
     else:
         raise RuntimeError(f"fal job timed out after {max_wait}s (request_id={request_id})")
 
     result = http(response_url, headers=fal_headers())
     result["_request_id"] = request_id
     return result
+
+
+def fal_run(model_id, payload, poll_seconds=5, max_wait=900):
+    """Submit to the fal queue and block until it finishes. Returns the
+    result dict. Convenience wrapper over fal_submit()+fal_poll() for
+    every caller that doesn't need the handle in between (the CLI)."""
+    handle = fal_submit(model_id, payload)
+    return fal_poll(handle, poll_seconds=poll_seconds, max_wait=max_wait)
 
 
 def fal_upload(path):
