@@ -16,9 +16,10 @@ No install step, no dependencies — stdlib only, same constraint as the CLI.
 ### Access control (recommended before exposing this on a real server)
 
 **Generating anything now always requires a signed-in user** — see "Multi-user
-mode" below. There is no single-tenant bypass any more: `_require_funded_user()`
-in `webapp/server.py` is the one gate every paid endpoint (image, video,
-post-production, avatar) calls through, and it rejects an unauthenticated
+mode" below. There is no single-tenant bypass any more: `_current_user_or_raise()` +
+`_reserve_funds()` in `webapp/server.py` is the one gate every paid endpoint
+(image, video, post-production, avatar, motion transfer) calls through, and
+it rejects an unauthenticated
 request unconditionally, whether it came from the browser UI or from the MCP
 server (itself just another caller of this same HTTP API). Leaving
 `SUPABASE_*` unset means nobody can generate at all, not that generation is
@@ -45,17 +46,25 @@ Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` (plus `SUPABASE_SERVICE_ROLE_KEY`
 to allow spending) in `.env` and the app switches from single-tenant to
 multi-user: a sign-in bar appears, each account gets its own job history and
 credit balance, and every paid generation is billed against that balance
-instead of running open-ended. Leave all three unset and the app behaves
-exactly as it did before this existed — no login, one shared workspace.
+instead of running open-ended. **Leave all three unset and the page and job
+history still load, but nobody — including the deployment's own owner — can
+generate anything**; there is no single-tenant "no login, spend for free"
+mode any more (see "Access control" above and "How the money gate works"
+below).
 
 1. Apply `02-multiuser-schema.sql` to your Supabase project (adds
    `owner_id` columns plus the `credits` / `credit_ledger` tables and their
-   RLS policies — see that file's comments for the design).
+   RLS policies), then `04-atomic-credits.sql` (adds the reservation table
+   and the `reserve_credit`/`capture_credit_reservation`/
+   `release_credit_reservation`/`refund_credit`/`debit_credit` functions
+   every paid action and top-up now goes through — see that file's
+   comments for the design).
 2. Fill in the three `SUPABASE_*` values from Project Settings → API.
-3. Grant a new user credit with `supabase_client.record_spend(user_id,
-   +5.00, note="manual top-up")` (there is no self-serve payment flow yet —
-   see "Deliberate limits" below) or an equivalent insert into
-   `credit_ledger` / `credits` from the Supabase SQL editor.
+3. Either let users top themselves up (see "Payments" below), or grant
+   credit by hand with `python3 -c "import ledger; ledger.SupabaseLedger().refund('USER_ID', 5.00, 'manual:some-unique-key', note='manual top-up')"`
+   (run from `webapp/`, with `SUPABASE_*` set in the environment) or an
+   equivalent insert into `credit_ledger` / `credits` from the Supabase
+   SQL editor.
 4. Restart the server. `/api/health`'s `auth_enabled` flag reports whether
    the UI is in multi-user mode.
 
@@ -193,12 +202,13 @@ the server quoted.
 ## Security notes
 
 - **Every paid endpoint requires a signed-in user, unconditionally.**
-  `_require_funded_user()` in `webapp/server.py` is the single gate image,
-  video, post-production, and avatar generation all call through, and it
-  now rejects a request with no verified session no matter what mode the
-  deployment is in — there is no single-tenant/LOCAL_OWNER bypass for
-  spending money any more. This also covers the MCP server (`mcp/server.py`),
-  since it's just another HTTP caller of this same API.
+  `_current_user_or_raise()` + `_reserve_funds()` in `webapp/server.py` is
+  the gate image, video, post-production, motion transfer, and avatar
+  generation all call through, and it now rejects a request with no
+  verified session no matter what mode the deployment is in — there is no
+  single-tenant/LOCAL_OWNER bypass for spending money any more. This also
+  covers the MCP server (`mcp/server.py`), since it's just another HTTP
+  caller of this same API.
 - **Security headers on every response.** `SECURITY_HEADERS` in
   `webapp/server.py` is sent from the one `_send()` method every response
   (static files, JSON, media) goes through: a strict `Content-Security-Policy`
@@ -228,7 +238,11 @@ the server quoted.
   signup, and the browser needs both to build the Google OAuth redirect
   itself.
 - `/media/` is confined to `work/` — paths are resolved and checked against
-  that root, so a crafted URL cannot read elsewhere on disk.
+  that root, so a crafted URL cannot read elsewhere on disk. Once Supabase
+  is configured it's also gated to the file's own owner (or an explicitly
+  published gallery item, see "Payments"/gallery notes) — a signed-in
+  user can't read another account's generated media just by knowing or
+  guessing its path.
 - Prompts are rendered as DOM text nodes, never `innerHTML`, so user text
   cannot inject markup.
 - The session cookie (`vf_session`, holding the Supabase access token) is
@@ -236,11 +250,14 @@ the server quoted.
   sent cross-site, plus `Secure` automatically whenever the request arrived
   over HTTPS (see `_is_https()` above) — no manual step needed behind a
   real TLS-terminating proxy (DEPLOY.md §5) or Railway's own domain.
-- `credits` and `credit_ledger` carry no client-writable RLS policy at all
-  (see `02-multiuser-schema.sql`) — the only way to move a balance is
-  `supabase_client.record_spend()` using the service role key, called
-  exclusively from the server after a generation actually succeeds. A user's
-  own token can only ever *read* their own balance.
+- `credits`, `credit_ledger`, and `credit_reservations` carry no
+  client-writable RLS policy at all (see `02-multiuser-schema.sql` and
+  `04-atomic-credits.sql`) — the only way to move a balance is the
+  `reserve_credit`/`capture_credit_reservation`/
+  `release_credit_reservation`/`refund_credit`/`debit_credit` Postgres
+  functions (`webapp/ledger.py`), called exclusively from the server with
+  the service role key. A user's own token can only ever *read* their own
+  balance and reservation history.
 - The pre-existing cost-confirmation gate is unchanged and still runs first:
   `approved_cost` must match the server-quoted price before a paid call is
   even attempted. The credit-balance check in multi-user mode is a second,
@@ -278,19 +295,20 @@ Multi-user mode is genuinely multi-tenant (per-user auth, per-user job
 history, per-user credit balance, real RLS on every table) but it is still
 an MVP, not a finished product:
 
-- **No self-serve payments.** Credits are granted by an admin running
-  `supabase_client.record_spend()` or a SQL insert by hand. See
-  `docs/startup-strategy.md` for the phased plan toward Payme/Click.
-- **No atomic balance updates, in two places.** `record_spend()` reads the
-  balance then writes it back (two round trips, not one SQL statement), and
-  separately `_require_funded_user()` checks the balance *before* a
-  generation runs while the actual deduction happens after it succeeds —
-  two concurrent requests from the same account can both pass the
-  pre-check against the same starting balance and spend past it. Fine for
-  an MVP's low concurrency per user; the real fix for both is the same one:
-  a single `SECURITY DEFINER` Postgres function that checks-and-deducts
-  atomically in one round trip, called instead of the current
-  read-then-write in `supabase_client.py`.
+- **Self-serve top-ups exist** (Stripe/Payme/Click, see the "Payments"
+  section above) alongside an admin granting credit by hand via a SQL
+  insert or `webapp/ledger.py`'s `refund()`.
+- **Balance updates are now atomic.** Every paid endpoint reserves the
+  cost via a `SECURITY DEFINER` Postgres function (`reserve_credit` in
+  `04-atomic-credits.sql`) *before* submitting to fal.ai — the row lock
+  inside that function's transaction is what makes two concurrent
+  requests from the same account correctly see each other's hold instead
+  of both passing a stale balance check. The reservation is captured
+  (turned into an actual charge) only after a validated, non-empty
+  result comes back, or released if generation fails — see
+  `webapp/ledger.py`'s module docstring for the full reserve → capture /
+  release flow and its idempotency-key protection against duplicate
+  requests double-charging.
 - **No password reset / email verification UI.** Whatever your Supabase
   project's auth settings do (e.g. requiring email confirmation) is what
   happens — the app surfaces Supabase's own message but adds no flow of its
