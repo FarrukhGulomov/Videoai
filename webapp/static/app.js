@@ -1230,6 +1230,7 @@
           seconds: quote.seconds,
           model: quote.model,
           approved_cost: quote.cost_usd,
+          pricing_version: quote.pricing_version,
         }),
       });
       poll(job.id,
@@ -1581,7 +1582,10 @@
     try {
       const job = await api("/api/postprod/run", {
         method: "POST",
-        body: JSON.stringify({ op, file_url: fileUrl, ...params, approved_cost: quote.cost_usd }),
+        body: JSON.stringify({
+          op, file_url: fileUrl, ...params,
+          approved_cost: quote.cost_usd, pricing_version: quote.pricing_version,
+        }),
       });
       poll(job.id,
         (done) => {
@@ -1665,6 +1669,7 @@
       const body = {
         image_url: imageUrl, audio_url: audioUrl,
         resolution: state.avatarResolution, approved_cost: quote.cost_usd,
+        pricing_version: quote.pricing_version,
       };
       if (prompt) body.prompt = prompt;
       const job = await api("/api/avatar/run", { method: "POST", body: JSON.stringify(body) });
@@ -1774,7 +1779,10 @@
     btn.disabled = true;
     setPanel($("motion-results"), workingPanel());
     try {
-      const body = { image_url: imageUrl, video_url: videoUrl, approved_cost: quote.cost_usd };
+      const body = {
+        image_url: imageUrl, video_url: videoUrl,
+        approved_cost: quote.cost_usd, pricing_version: quote.pricing_version,
+      };
       if (prompt) body.prompt = prompt;
       const job = await api("/api/motion-transfer/run", { method: "POST", body: JSON.stringify(body) });
       poll(job.id,

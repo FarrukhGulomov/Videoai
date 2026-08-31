@@ -21,15 +21,19 @@ Run:  python3 webapp/server.py [--port 8000]
 
 import argparse
 import base64
+import concurrent.futures
+import hashlib
 import hmac
 import http.cookies
 import importlib.util
+import ipaddress
 import json
 import mimetypes
 import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -38,6 +42,7 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import ledger
 import payments
 import supabase_client as db
 
@@ -51,8 +56,8 @@ MAX_BODY_BYTES = 2 * 1024 * 1024  # prompts and settings only; media goes by URL
 
 # "local" is the owner_id used only for reading job history when Supabase
 # isn't configured (see _owner_id()) -- generation itself no longer has a
-# LOCAL_OWNER bypass (see _require_funded_user()): every paid action
-# requires a real signed-in user regardless of deployment mode.
+# LOCAL_OWNER bypass (see _current_user_or_raise()/_reserve_funds()): every
+# paid action requires a real signed-in user regardless of deployment mode.
 LOCAL_OWNER = "local"
 SESSION_COOKIE = "vf_session"
 
@@ -109,6 +114,7 @@ def _load_factory():
 
 factory = _load_factory()
 CONFIG = factory.load_config()
+PRICING_VERSION = CONFIG.get("pricing_version")
 
 
 # ---------------------------------------------------------------------- auth
@@ -202,6 +208,21 @@ def _basic_auth_credentials():
     return None
 
 
+def _is_public_ip(ip_str):
+    """False for anything that isn't a normal, routable public address --
+    loopback (127.0.0.1, ::1), link-local (169.254.x.x -- includes cloud
+    metadata endpoints like 169.254.169.254), private ranges (10/8,
+    172.16/12, 192.168/16, fc00::/7), multicast, reserved, and unspecified
+    (0.0.0.0). Used to reject a server-side fetch aimed at internal
+    infrastructure."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
 def _require_public_url(value, field_name, allow_data=False):
     """Boundary validation for every URL a client can hand us that later
     reaches resolve_image()/fal_upload() (which reads local files by
@@ -210,7 +231,20 @@ def _require_public_url(value, field_name, allow_data=False):
     "../.env") or an internal address and have the server read or probe
     it on their behalf -- a local-file-disclosure / SSRF vector. Public
     http(s) is always allowed; data: URIs are self-contained (no fetch
-    happens) so they're safe to allow where the caller opts in."""
+    happens) so they're safe to allow where the caller opts in.
+
+    Beyond the scheme check, this also resolves the hostname and rejects
+    it if any resolved address is private/loopback/link-local/etc (an
+    attacker-controlled DNS name pointed at 127.0.0.1 or a cloud metadata
+    endpoint, or a raw IP literal in the URL itself). This is validated
+    here, at request time -- it is NOT a guarantee that the exact same
+    resolution is used at fetch time a moment later; a name whose DNS
+    answer changes between this check and the actual ffmpeg/urllib fetch
+    (DNS rebinding) is a known residual gap this doesn't close. Closing
+    that fully requires resolving once and connecting to the pinned IP
+    for the real fetch too, which needs changes in scripts/factory.py's
+    HTTP client and in how ffmpeg is given its input -- not done in this
+    pass; see PAYMENTS.md-style follow-up notes."""
     value = (value or "").strip()
     if not value:
         raise ValueError(f"{field_name} is required.")
@@ -218,6 +252,18 @@ def _require_public_url(value, field_name, allow_data=False):
     if not value.startswith(schemes):
         allowed = "a public http(s) URL or a data: URI" if allow_data else "a public http(s) URL"
         raise ValueError(f"{field_name} must be {allowed}, not a local path.")
+    if value.startswith("data:"):
+        return value
+
+    hostname = urllib.parse.urlparse(value).hostname
+    if not hostname:
+        raise ValueError(f"{field_name} is not a valid URL.")
+    try:
+        resolved = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror:
+        raise ValueError(f"{field_name}'s host could not be resolved.") from None
+    if not resolved or not all(_is_public_ip(ip) for ip in resolved):
+        raise ValueError(f"{field_name} must be a public address, not an internal/private one.")
     return value
 
 
@@ -485,15 +531,34 @@ def _postprod_payload(op, file_url, params):
 
 
 # ---------------------------------------------------------------- job storage
+#
+# `_persist()` is called twice per job now, not once: immediately at
+# creation (status="queued", before the provider is ever called) and
+# again at the terminal state (done/error). Both writes append a line to
+# the same JSONL file; `_load_persisted()` replays it in order and lets
+# the last line for a given id win, so this is safe with the existing
+# format -- a process that dies between the two writes leaves the
+# "queued" line as the last known state, which is exactly what restart
+# recovery below needs to notice and reconcile.
 
 _jobs = {}
 _jobs_lock = threading.Lock()
+_idem_index = {}  # idempotency_key -> job_id, most recent attempt
+
+# Bounded concurrency: every paid job (image/video/postprod/motion/avatar)
+# is submitted here instead of an unbounded `threading.Thread(...).start()`
+# per request, so a burst of requests queues instead of spawning unbounded
+# provider calls and OS threads.
+JOB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=int(os.environ.get("MAX_CONCURRENT_JOBS", "8")),
+    thread_name_prefix="job",
+)
 
 
 def _persist(job):
-    """Append a terminal job to disk so history survives a restart. The
-    per-generation ledger in factory.py stays the source of truth for
-    spend; this file only backs the gallery."""
+    """Append this job's current state to disk. The per-generation ledger
+    in factory.py stays the source of truth for spend; this file backs
+    the gallery, job history, and restart recovery."""
     WORK.mkdir(parents=True, exist_ok=True)
     with open(JOBS_FILE, "a") as fh:
         fh.write(json.dumps(job) + "\n")
@@ -511,6 +576,8 @@ def _load_persisted():
             continue
         if job.get("id"):
             _jobs[job["id"]] = job
+            if job.get("idempotency_key"):
+                _idem_index[job["idempotency_key"]] = job["id"]
 
 
 def _new_job(kind, owner_id, **fields):
@@ -524,11 +591,192 @@ def _new_job(kind, owner_id, **fields):
         "outputs": [],
         "error": None,
         "credit_deducted": None,
+        "idempotency_key": None,
+        "reservation_id": None,
+        "billing_error": None,
         **fields,
     }
     with _jobs_lock:
         _jobs[job["id"]] = job
+        if job.get("idempotency_key"):
+            _idem_index[job["idempotency_key"]] = job["id"]
     return job
+
+
+def _media_job_for_path(rel):
+    """Finds the job (if any) whose recorded outputs include this media
+    path -- see _serve_media, which uses this to decide who may read a
+    file under work/. O(n) over in-memory jobs; fine at this project's
+    scale and avoids a second index that could drift from _jobs itself."""
+    target = f"/media/{rel}"
+    with _jobs_lock:
+        for job in _jobs.values():
+            if target in (job.get("outputs") or []):
+                return dict(job)
+    return None
+
+
+def _dedup_lookup(idem_key):
+    """Returns the existing job dict if a request with this idempotency
+    key is already queued, running, or already succeeded -- the caller
+    should return it as-is instead of reserving/creating anything new.
+    None if this is a first attempt, or if the only prior attempt with
+    this key ended in error (a genuine failure should be retryable, not
+    permanently stuck -- see _reservation_key_for)."""
+    with _jobs_lock:
+        job_id = _idem_index.get(idem_key)
+        job = _jobs.get(job_id) if job_id else None
+        return dict(job) if job and job.get("status") != "error" else None
+
+
+def _reservation_key_for(idem_key):
+    """The ledger idempotency key to reserve under: the base key itself
+    on a first attempt, or a fresh attempt-scoped suffix if the previous
+    job under this same key ended in error and released its hold --
+    reserve() replays an existing reservation verbatim regardless of its
+    status, so reusing a released key would permanently block a real
+    retry instead of trying again."""
+    with _jobs_lock:
+        job_id = _idem_index.get(idem_key)
+        job = _jobs.get(job_id) if job_id else None
+    if job and job.get("status") == "error":
+        return f"{idem_key}#retry-{uuid.uuid4().hex[:8]}"
+    return idem_key
+
+
+def _idempotency_key(endpoint, owner_id, body):
+    """Deterministic dedup key for one logical paid action: the same
+    user submitting the same endpoint with the same request body (a
+    network-retried request, or a double-click) hashes to the same key,
+    so it reserves/charges at most once (see _dedup_lookup /
+    _reservation_key_for) instead of once per HTTP request received.
+    `approved_cost` and an optional client-supplied `idempotency_key` are
+    excluded from the hash -- they describe *approval*, not *what* is
+    being requested. A client MAY pass its own `idempotency_key` in the
+    body for a guarantee that survives the payload varying between
+    retries (not required for the common case)."""
+    explicit = str(body.get("idempotency_key") or "").strip()
+    if explicit:
+        return f"{endpoint}:{owner_id}:{explicit}"[:250]
+    canonical = {k: v for k, v in body.items() if k not in ("approved_cost", "idempotency_key")}
+    digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
+    return f"{endpoint}:{owner_id}:{digest}"
+
+
+def _checkpoint_fal_handle(job_id, handle):
+    """Persist the fal.ai queue handle the moment it exists, before
+    waiting for the result -- this is what makes restart recovery
+    possible (see _recover_orphaned_jobs): even if this process dies
+    while fal_poll() is still waiting, the handle survives on disk and a
+    fresh process can resume polling the exact same in-flight fal
+    request instead of losing track of it and leaving the reservation
+    stuck."""
+    job = _update(job_id, fal_request_id=handle["request_id"],
+                  fal_status_url=handle["status_url"], fal_response_url=handle["response_url"])
+    _persist(job)
+
+
+def _validate_outputs(urls, kind="output"):
+    """Refuse to capture a charge for an empty/missing output -- the
+    provider call must have actually produced something before money
+    moves. Checks presence/shape only (not full decodability -- a real
+    ffprobe/decoder pass over every output is a further hardening step,
+    not done here; see PAYMENTS.md-style verification notes)."""
+    if not urls or not any(u for u in urls):
+        raise RuntimeError(f"fal returned no usable {kind}")
+
+
+def _capture(job_id, reservation_key, note):
+    """Turn a reservation into an actual charge after a validated,
+    successful generation. Fail-closed on the *reservation* side (nothing
+    is ever captured without first being reserved), but not blocking on
+    the *result* side: if Supabase happens to be down at this exact
+    moment, the already-produced, already-fal-charged-to-us result is
+    still handed to the customer (withholding it wouldn't undo the real
+    provider spend, it would just also lose the customer's trust) while
+    the job is flagged billing_error for manual reconciliation -- the
+    reservation is left in "reserved" state, not silently dropped, so an
+    operator can capture it later instead of the generation being free
+    forever."""
+    try:
+        ledger.get_ledger().capture(reservation_key, note=note)
+    except ledger.LedgerError as exc:
+        print(f"  BILLING ALERT: capture failed for job {job_id} (reservation {reservation_key}): {exc}")
+        _update(job_id, billing_error=str(exc)[:500])
+
+
+def _release(job_id, reservation_key):
+    """Drop a reservation after a failed/invalid generation -- nothing
+    was ever actually charged."""
+    try:
+        ledger.get_ledger().release(reservation_key)
+    except ledger.LedgerError as exc:
+        print(f"  BILLING ALERT: release failed for job {job_id} (reservation {reservation_key}): {exc}")
+
+
+def _recover_orphaned_jobs():
+    """Runs once at startup, after _load_persisted(). Any job still in
+    "queued" or "running" state is one this process was in the middle of
+    when it (or a previous instance) stopped -- restart recovery for
+    those:
+
+      - A recorded fal handle (fal_status_url) exists: the fal request
+        may have kept running on fal's side the whole time this process
+        was down. Resume polling it in the background; capture on
+        success, release on failure/timeout, exactly like a normal
+        worker would.
+      - No fal handle recorded: the process died before ever reaching
+        fal (or before the handle was persisted) -- there is nothing to
+        reconcile against, so release the hold and mark the job failed
+        rather than leave an orphaned reservation and a job stuck at
+        "queued"/"running" forever.
+
+    Either way this fails closed: a reservation is only ever captured
+    after a real, confirmed, validated fal result -- never assumed."""
+    with _jobs_lock:
+        orphans = [dict(j) for j in _jobs.values() if j.get("status") in ("queued", "running")]
+    for job in orphans:
+        job_id = job["id"]
+        reservation_key = job.get("reservation_id")
+        handle = {"status_url": job.get("fal_status_url"), "response_url": job.get("fal_response_url"),
+                  "request_id": job.get("fal_request_id")}
+        if not handle["status_url"] or not handle["response_url"]:
+            print(f"  RECOVERY: job {job_id} had no fal handle recorded -- releasing and marking failed.")
+            if reservation_key:
+                _release(job_id, reservation_key)
+            j = _update(job_id, status="error", stage="Failed",
+                        error="Interrupted by a server restart before it reached the provider. Not charged.")
+            _persist(j)
+            continue
+
+        def _resume(job_id=job_id, handle=handle, reservation_key=reservation_key, job=job):
+            print(f"  RECOVERY: resuming job {job_id} (fal request {handle['request_id']})…")
+            try:
+                result = factory.fal_poll(handle, max_wait=1800)
+                kind = job.get("kind")
+                if kind == "image":
+                    urls = factory.all_urls(result, "images", "image")
+                    _validate_outputs(urls, "image")
+                    outputs = urls
+                else:
+                    url = factory.first_url(result, "video", "videos")
+                    _validate_outputs([url], "video")
+                    outputs = [url]
+                if reservation_key:
+                    _capture(job_id, reservation_key, note=f"web:{job_id} recovered")
+                j = _update(job_id, status="done", stage="Done", outputs=outputs,
+                            request_id=result.get("_request_id"), credit_deducted=True)
+                _persist(j)
+                print(f"  RECOVERY: job {job_id} completed successfully.")
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
+                print(f"  RECOVERY: job {job_id} could not be recovered: {exc}")
+                if reservation_key:
+                    _release(job_id, reservation_key)
+                j = _update(job_id, status="error", stage="Failed",
+                            error=friendly_error(exc), error_raw=str(exc)[:1500])
+                _persist(j)
+
+        JOB_EXECUTOR.submit(_resume)
 
 
 def _update(job_id, **fields):
@@ -628,8 +876,15 @@ def _credit_topup(topup_id, note):
         topup["paid_at"] = time.time()
         snapshot = dict(topup)
     try:
-        db.record_spend(snapshot["user_id"], snapshot["amount_usd"], note=note)
-    except db.SupabaseError as exc:
+        # "topup:" prefix is what 04-atomic-credits.sql's refund_credit()
+        # uses to classify this as reason='manual_topup' rather than
+        # 'refund' in the ledger -- and topup_id itself is the DB-level
+        # idempotency key, a second layer under the in-memory _topups
+        # status check above (this survives a restart between the two;
+        # the in-memory check alone wouldn't).
+        ledger.get_ledger().refund(snapshot["user_id"], snapshot["amount_usd"],
+                                    f"topup:{topup_id}", note=note)
+    except ledger.LedgerError as exc:
         # Roll the local state back so a retry (the provider WILL retry a
         # non-2xx/non-success response) gets another chance to actually
         # credit the account, instead of being silently treated as
@@ -735,8 +990,9 @@ def _payme_cancel_transaction(request_id, params):
     if topup["status"] != "cancelled":
         if was_paid:
             try:
-                db.record_spend(topup["user_id"], -topup["amount_usd"], note=f"payme:{payme_txn_id}:refund")
-            except db.SupabaseError as exc:
+                ledger.get_ledger().debit(topup["user_id"], topup["amount_usd"],
+                                           f"payme:{payme_txn_id}:refund", note="payme cancel after complete")
+            except ledger.LedgerError as exc:
                 raise payments.PaymentError(f"Could not reverse credit: {exc}") from None
         topup = _update_topup(topup["id"], status="cancelled", cancelled_at=time.time())
     state = payments.PAYME_STATE_CANCELLED_AFTER_COMPLETE if was_paid else payments.PAYME_STATE_CANCELLED
@@ -917,37 +1173,24 @@ def friendly_error(exc):
 
 
 # -------------------------------------------------------------------- workers
+#
+# Every worker below follows the same shape: fal_submit() -> checkpoint
+# the handle to disk -> fal_poll() -> validate the output -> capture the
+# reservation -> mark done; any exception along the way releases the
+# reservation and marks the job failed. See _checkpoint_fal_handle,
+# _validate_outputs, _capture, _release above.
 
-def _charge(job_id, charge_user_id, cost, note):
-    """Deduct cost from charge_user_id's balance after a successful paid
-    generation. No-op in single-tenant mode (charge_user_id is None). A
-    deduction failure (e.g. service key missing) is recorded on the job
-    but never undoes or blocks the already-completed generation -- the
-    fal spend already happened regardless."""
-    if not charge_user_id:
-        return None
-    try:
-        db.record_spend(charge_user_id, -cost, note=note)
-        return True
-    except db.SupabaseError as exc:
-        print(f"  WARNING: credit deduction failed for job {job_id}: {exc}")
-        return False
-
-
-def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id, cost):
+def _run_image_job(job_id, prompt, count, aspect, refs, cost, owner_id, reservation_key):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         # `refs` are client-supplied and already validated as public
-        # http(s)/data URLs by _generate_image -- used as-is, never
-        # resolved against a local path. `canonical` is server-configured
-        # (config.json, a repo-relative path) and is the only ref allowed
-        # to go through the local-file upload path.
-        canonical = CONFIG.get("identity", {}).get("canonical_face_ref")
+        # http(s)/data URLs by _generate_image -- used as-is. No global
+        # canonical-face image is auto-injected any more: identity now
+        # only ever comes from a character the user explicitly selected
+        # (see the "Character (optional)" chip row / selectedCharacterId
+        # in webapp/static/app.js), whose reference photos are already
+        # included in `refs` by the time this runs.
         image_urls = list(refs or [])
-        if canonical and (ROOT / canonical).exists():
-            canonical_url = factory.resolve_image(str(ROOT / canonical))
-            if canonical_url not in image_urls:
-                image_urls.insert(0, canonical_url)
 
         model = CONFIG["models"]["still_edit"] if image_urls else CONFIG["models"]["still"]
         payload = {
@@ -960,8 +1203,11 @@ def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id, cost):
             payload["image_urls"] = image_urls
 
         _update(job_id, stage="Generating variants…")
-        result = factory.fal_run(model, payload)
+        handle = factory.fal_submit(model, payload)
+        _checkpoint_fal_handle(job_id, handle)
+        result = factory.fal_poll(handle, max_wait=900)
         urls = factory.all_urls(result, "images", "image")
+        _validate_outputs(urls, "image")
 
         wholesale_cost = round(CONFIG["rates"]["still_per_image_usd"] * count, 4)
         factory.log_generation({
@@ -970,28 +1216,30 @@ def _run_image_job(job_id, prompt, count, aspect, refs, charge_user_id, cost):
             "status": "success", "output_url": urls[0] if urls else None,
             "request_id": result.get("_request_id"),
         })
-        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} image x{count}")
+        _capture(job_id, reservation_key, note=f"web:{job_id} image x{count}")
 
         job = _update(job_id, status="done", stage="Done", outputs=urls,
-                      request_id=result.get("_request_id"), credit_deducted=deducted)
+                      request_id=result.get("_request_id"), credit_deducted=True)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - surfaced to the user, logged raw
         # SystemExit must be caught explicitly: factory.py's die() (called
         # by resolve_image/fal_upload/build_video_payload/fal_key on any
         # bad input) raises it via sys.exit(), and SystemExit inherits
         # from BaseException, not Exception -- a bare `except Exception`
-        # here lets it escape this daemon thread silently, leaving the
+        # here lets it escape this pool thread silently, leaving the
         # job stuck at status="running" forever with no error surfaced.
         factory.log_generation({
             "scene_id": f"web:{job_id}", "rung": 1, "prompt": prompt,
             "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
         })
+        _release(job_id, reservation_key)
         job = _update(job_id, status="error", stage="Failed",
                       error=friendly_error(exc), error_raw=str(exc)[:1500])
         _persist(job)
 
 
-def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, cost, audio, end_image_url, charge_user_id):
+def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, cost, audio,
+                    end_image_url, owner_id, reservation_key):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     try:
         payload = factory.build_video_payload(
@@ -1001,8 +1249,11 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, co
             audio, CONFIG, end_frame=end_image_url or None,
         )
         _update(job_id, stage="Rendering video — this usually takes 1–3 minutes…")
-        result = factory.fal_run(model, payload, max_wait=1800)
+        handle = factory.fal_submit(model, payload)
+        _checkpoint_fal_handle(job_id, handle)
+        result = factory.fal_poll(handle, max_wait=1800)
         url = factory.first_url(result, "video", "videos")
+        _validate_outputs([url], "video")
 
         wholesale_cost = round(wholesale_rate * seconds, 4)
         factory.log_generation({
@@ -1012,12 +1263,10 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, co
             "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
+        _capture(job_id, reservation_key, note=f"web:{job_id} video {seconds}s {model}")
 
-        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} video {seconds}s {model}")
-
-        job = _update(job_id, status="done", stage="Done",
-                      outputs=[url] if url else [],
-                      request_id=result.get("_request_id"), credit_deducted=deducted)
+        job = _update(job_id, status="done", stage="Done", outputs=[url],
+                      request_id=result.get("_request_id"), credit_deducted=True)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
@@ -1025,12 +1274,13 @@ def _run_video_job(job_id, prompt, image_url, seconds, model, wholesale_rate, co
             "prompt": prompt, "duration_seconds": seconds,
             "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
         })
+        _release(job_id, reservation_key)
         job = _update(job_id, status="error", stage="Failed",
                       error=friendly_error(exc), error_raw=str(exc)[:1500])
         _persist(job)
 
 
-def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost, charge_user_id):
+def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost, owner_id, reservation_key):
     _update(job_id, status="running", stage="Sending to fal.ai…")
     out_dir = WORK / "postprod"
     try:
@@ -1039,7 +1289,9 @@ def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost,
             if params.get("lang"):
                 payload["language"] = params["lang"]
             _update(job_id, stage="Transcribing…")
-            result = factory.fal_run(model, payload, max_wait=600)
+            handle = factory.fal_submit(model, payload)
+            _checkpoint_fal_handle(job_id, handle)
+            result = factory.fal_poll(handle, max_wait=600)
             chunks = result.get("chunks") or []
             if not chunks:
                 raise RuntimeError("transcription returned no timed segments")
@@ -1068,10 +1320,11 @@ def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost,
         else:
             payload = _postprod_payload(op, file_url, params)
             _update(job_id, stage="Processing…")
-            result = factory.fal_run(model, payload, max_wait=1800)
+            handle = factory.fal_submit(model, payload)
+            _checkpoint_fal_handle(job_id, handle)
+            result = factory.fal_poll(handle, max_wait=1800)
             url = factory.first_url(result, "video", "videos")
-            if not url:
-                raise RuntimeError("no output returned")
+            _validate_outputs([url], "postprod output")
             # Own subdirectory per job: factory.download() names the file
             # from the URL's own basename (needed since bgremove/Bria
             # defaults to webm, not mp4 -- a webm served as "video/mp4"
@@ -1088,21 +1341,22 @@ def _run_postprod_job(job_id, op, file_url, params, model, wholesale_cost, cost,
             "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success",
             "output_url": outputs[0] if outputs else None, "request_id": request_id,
         })
-        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} postprod {op}")
+        _capture(job_id, reservation_key, note=f"web:{job_id} postprod {op}")
         job = _update(job_id, status="done", stage="Done", outputs=outputs,
-                      request_id=request_id, credit_deducted=deducted)
+                      request_id=request_id, credit_deducted=True)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": op, "status": "failed",
             "error": str(exc)[:1500], "cost_usd": 0,
         })
+        _release(job_id, reservation_key)
         job = _update(job_id, status="error", stage="Failed",
                       error=friendly_error(exc), error_raw=str(exc)[:1500])
         _persist(job)
 
 
-def _run_motion_transfer_job(job_id, image_url, video_url, prompt, wholesale_cost, cost, charge_user_id):
+def _run_motion_transfer_job(job_id, image_url, video_url, prompt, wholesale_cost, cost, owner_id, reservation_key):
     """Applies a reference video's motion to a static character image
     (fal-ai/kling-video/v2.6/standard/motion-control -- see
     scripts/config.json's _motion_transfer_note). Same discipline as every
@@ -1124,30 +1378,34 @@ def _run_motion_transfer_job(job_id, image_url, video_url, prompt, wholesale_cos
             payload["prompt"] = prompt
 
         _update(job_id, stage="Transferring the motion — this can take a few minutes…")
-        result = factory.fal_run(model, payload, max_wait=1800)
+        handle = factory.fal_submit(model, payload)
+        _checkpoint_fal_handle(job_id, handle)
+        result = factory.fal_poll(handle, max_wait=1800)
         url = factory.first_url(result, "video", "videos")
+        _validate_outputs([url], "video")
 
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "motion_transfer", "model": model,
             "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
-        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} motion_transfer")
-        job = _update(job_id, status="done", stage="Done",
-                      outputs=[url] if url else [],
-                      request_id=result.get("_request_id"), credit_deducted=deducted)
+        _capture(job_id, reservation_key, note=f"web:{job_id} motion_transfer")
+        job = _update(job_id, status="done", stage="Done", outputs=[url],
+                      request_id=result.get("_request_id"), credit_deducted=True)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "motion_transfer",
             "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
         })
+        _release(job_id, reservation_key)
         job = _update(job_id, status="error", stage="Failed",
                       error=friendly_error(exc), error_raw=str(exc)[:1500])
         _persist(job)
 
 
-def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost, charge_user_id):
+def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost,
+                     owner_id, reservation_key):
     """Turns a photo + voice track into a talking-head video (OmniHuman).
     `cost` is computed once up front (by _generate_avatar, from the audio's
     real probed duration) and threaded through unchanged -- not
@@ -1164,24 +1422,27 @@ def _run_avatar_job(job_id, image_url, audio_url, prompt, resolution, turbo, who
             payload["turbo_mode"] = True
 
         _update(job_id, stage="Animating the photo — this can take a few minutes…")
-        result = factory.fal_run(model, payload, max_wait=1800)
+        handle = factory.fal_submit(model, payload)
+        _checkpoint_fal_handle(job_id, handle)
+        result = factory.fal_poll(handle, max_wait=1800)
         url = factory.first_url(result, "video", "videos")
+        _validate_outputs([url], "video")
 
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "avatar", "model": model,
             "cost_usd": wholesale_cost, "customer_charged_usd": cost, "status": "success", "output_url": url,
             "request_id": result.get("_request_id"),
         })
-        deducted = _charge(job_id, charge_user_id, cost, note=f"web:{job_id} avatar")
-        job = _update(job_id, status="done", stage="Done",
-                      outputs=[url] if url else [],
-                      request_id=result.get("_request_id"), credit_deducted=deducted)
+        _capture(job_id, reservation_key, note=f"web:{job_id} avatar")
+        job = _update(job_id, status="done", stage="Done", outputs=[url],
+                      request_id=result.get("_request_id"), credit_deducted=True)
         _persist(job)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - see _run_image_job
         factory.log_generation({
             "scene_id": f"web:{job_id}", "op": "avatar",
             "status": "failed", "error": str(exc)[:1500], "cost_usd": 0,
         })
+        _release(job_id, reservation_key)
         job = _update(job_id, status="error", stage="Failed",
                       error=friendly_error(exc), error_raw=str(exc)[:1500])
         _persist(job)
@@ -1552,7 +1813,7 @@ class Handler(BaseHTTPRequestHandler):
     def _require_current_user(self):
         """Every characters endpoint needs a real signed-in user -- the
         same requirement generation itself now has (see
-        _require_funded_user). Characters live in Supabase's `characters`
+        _current_user_or_raise). Characters live in Supabase's `characters`
         table via PostgREST, RLS-scoped to owner_id = auth.uid(), so the
         caller's own access token is all that's needed here; no service
         role key involved, same as get_balance()."""
@@ -1857,36 +2118,75 @@ class Handler(BaseHTTPRequestHandler):
         cost = round(rate * seconds, 4)
         return self._send(200, {
             "model": model, "seconds": seconds, "rate": rate, "cost_usd": cost,
+            "pricing_version": PRICING_VERSION,
             "shown_as": f"{seconds}s x ${rate}/s = ${cost}",
         })
 
-    def _require_funded_user(self, cost):
-        """Shared gate for every paid endpoint (image, video, postprod,
-        avatar) -- the one choke point all of them call through. A signed-in
-        user with enough balance is required unconditionally, regardless of
-        deployment mode: there is no LOCAL_OWNER/single-tenant bypass here
-        any more. This is deliberate -- generation spends real money against
-        FAL_KEY, and this project's security requirement is that nobody,
-        including a request from the MCP server (which is just another
-        caller of this same HTTP API -- see mcp/README.md), can trigger a
-        paid generation without a verified session. A deployment that
-        hasn't configured SUPABASE_*/DATABASE_URL at all means
-        _current_user() always returns None here, so every generation
-        request is rejected with the same "sign in" error rather than
-        silently running for free -- treat that as a deployment that still
-        needs auth configured, not a supported anonymous mode.
-        Returns (owner_id, charge_user_id) or raises ValueError with a
-        message safe to show the caller."""
+    def _current_user_or_raise(self):
         user = _current_user(self)
         if not user:
             raise ValueError("Sign in to generate.")
-        balance = db.get_balance(user["id"], user["access_token"])
-        if balance < cost:
+        return user
+
+    def _require_pricing_version(self, body):
+        """Optional, backward-compatible SKU-parity check: if the caller
+        echoes back the pricing_version a quote gave it and it no longer
+        matches this process's current CONFIG, the price may have been
+        computed under different rules since that quote was issued (e.g. a
+        redeploy between quote and confirm) -- reject and ask for a fresh
+        quote rather than trust a stale one. A caller that doesn't send it
+        (older client, or an endpoint like image generation that skips the
+        quote step) isn't blocked by this -- the approved_cost check next
+        to every call site is the hard money gate either way."""
+        quoted = body.get("pricing_version")
+        if quoted is not None and quoted != PRICING_VERSION:
+            raise ValueError(
+                "Pricing was updated on the server since this was quoted. "
+                "Get a fresh price and try again."
+            )
+
+    def _reserve_funds(self, user, cost, reservation_key, note):
+        """Reserve `cost` from user's spendable balance before submitting
+        anything to the provider -- the one choke point every paid
+        endpoint (image, video, postprod, avatar, motion transfer) calls
+        through. Fails closed: raises ValueError (nothing reserved,
+        nothing submitted) if the user doesn't have enough balance, or if
+        billing can't be verified at all right now (ledger/Supabase
+        unreachable) -- a paid action never silently runs for free just
+        because billing was unavailable to check. Returns the
+        ledger.Reservation on success."""
+        try:
+            return ledger.get_ledger().reserve(user["id"], cost, reservation_key, note=note)
+        except ledger.InsufficientFundsError:
+            balance = db.get_balance(user["id"], user["access_token"])
             raise ValueError(
                 f"Not enough credits: balance is ${balance:.2f}, this costs ${cost:.2f}. "
                 "Ask an admin to top up your account."
-            )
-        return user["id"], user["id"]
+            ) from None
+        except ledger.LedgerError as exc:
+            raise ValueError(f"Could not verify billing right now: {exc}") from None
+
+    def _start_paid_job(self, endpoint, user, body, cost, kind, worker, worker_args, note, **job_fields):
+        """Shared tail end of every paid endpoint below: dedupe on the
+        request's idempotency key, reserve funds, persist the job BEFORE
+        the provider is ever called (durable checkpoint -- see
+        _recover_orphaned_jobs), then hand it to the bounded job pool.
+        `worker_args` is everything the worker needs *except* the job id
+        (prepended) and the reservation key (appended) -- both threaded
+        through here so every call site doesn't have to repeat that
+        wiring. Returns the (202, job) response tuple's job dict; the
+        caller sends it."""
+        idem_key = _idempotency_key(endpoint, user["id"], body)
+        existing = _dedup_lookup(idem_key)
+        if existing is not None:
+            return existing
+        reservation_key = _reservation_key_for(idem_key)
+        self._reserve_funds(user, cost, reservation_key, note)
+        job = _new_job(kind, user["id"], cost_usd=cost,
+                       idempotency_key=idem_key, reservation_id=reservation_key, **job_fields)
+        _persist(job)
+        JOB_EXECUTOR.submit(worker, job["id"], *worker_args, user["id"], reservation_key)
+        return job
 
     def _generate_image(self, body):
         """approved_cost is OPTIONAL here, unlike video/postprod: the web UI
@@ -1919,16 +2219,12 @@ class Handler(BaseHTTPRequestHandler):
                 "Nothing was charged — re-confirm to continue."
             )
 
-        owner, charge_user_id = self._require_funded_user(cost)
-
-        job = _new_job(
-            "image", owner, prompt=prompt, count=count, aspect=aspect, cost_usd=cost,
+        user = self._current_user_or_raise()
+        job = self._start_paid_job(
+            "image", user, body, cost, "image", _run_image_job,
+            (prompt, count, aspect, refs, cost), f"web:image x{count}",
+            prompt=prompt, count=count, aspect=aspect,
         )
-        threading.Thread(
-            target=_run_image_job,
-            args=(job["id"], prompt, count, aspect, refs, charge_user_id, cost),
-            daemon=True,
-        ).start()
         return self._send(202, job)
 
     def _generate_video(self, body):
@@ -1966,20 +2262,16 @@ class Handler(BaseHTTPRequestHandler):
                 f"The price changed to ${cost} since it was quoted. "
                 "Nothing was charged — re-confirm to continue."
             )
+        self._require_pricing_version(body)
 
-        owner, charge_user_id = self._require_funded_user(cost)
-
-        job = _new_job(
-            "video", owner, prompt=prompt, image_url=image_url, seconds=seconds,
-            model=model, cost_usd=cost,
+        user = self._current_user_or_raise()
+        audio = bool(body.get("audio", CONFIG["defaults"]["final_audio"]))
+        job = self._start_paid_job(
+            "video", user, body, cost, "video", _run_video_job,
+            (prompt, image_url, seconds, model, wholesale_rate, cost, audio, end_image_url),
+            f"web:video {seconds}s {model}",
+            prompt=prompt, image_url=image_url, seconds=seconds, model=model,
         )
-        threading.Thread(
-            target=_run_video_job,
-            args=(job["id"], prompt, image_url, seconds, model, wholesale_rate, cost,
-                  bool(body.get("audio", CONFIG["defaults"]["final_audio"])),
-                  end_image_url, charge_user_id),
-            daemon=True,
-        ).start()
         return self._send(202, job)
 
     # -- post-production ---------------------------------------------------
@@ -1996,7 +2288,7 @@ class Handler(BaseHTTPRequestHandler):
         cost = round(rate * duration, 4)
         return self._send(200, {
             "op": op, "model": model, "duration_seconds": round(duration, 2),
-            "rate": rate, "cost_usd": cost,
+            "rate": rate, "cost_usd": cost, "pricing_version": PRICING_VERSION,
             "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
         })
 
@@ -2028,16 +2320,14 @@ class Handler(BaseHTTPRequestHandler):
                 f"The price changed to ${cost} since it was quoted. "
                 "Nothing was charged — re-confirm to continue."
             )
+        self._require_pricing_version(body)
 
-        owner, charge_user_id = self._require_funded_user(cost)
-
-        job = _new_job("postprod", owner, op=op, model=model, cost_usd=cost,
-                       duration_seconds=round(duration, 2))
-        threading.Thread(
-            target=_run_postprod_job,
-            args=(job["id"], op, file_url, body, model, wholesale_cost, cost, charge_user_id),
-            daemon=True,
-        ).start()
+        user = self._current_user_or_raise()
+        job = self._start_paid_job(
+            "postprod", user, body, cost, "postprod", _run_postprod_job,
+            (op, file_url, body, model, wholesale_cost, cost), f"web:postprod {op}",
+            op=op, model=model, duration_seconds=round(duration, 2),
+        )
         return self._send(202, job)
 
     # -- talking avatar (image + voice track -> new video) ---------------
@@ -2057,6 +2347,7 @@ class Handler(BaseHTTPRequestHandler):
         cost = round(rate * duration, 4)
         return self._send(200, {
             "duration_seconds": round(duration, 2), "rate": rate, "cost_usd": cost,
+            "pricing_version": PRICING_VERSION,
             "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
         })
 
@@ -2082,15 +2373,14 @@ class Handler(BaseHTTPRequestHandler):
                 f"The price changed to ${cost} since it was quoted. "
                 "Nothing was charged — re-confirm to continue."
             )
+        self._require_pricing_version(body)
 
-        owner, charge_user_id = self._require_funded_user(cost)
-
-        job = _new_job("motion_transfer", owner, cost_usd=cost, duration_seconds=round(duration, 2))
-        threading.Thread(
-            target=_run_motion_transfer_job,
-            args=(job["id"], image_url, video_url, prompt, wholesale_cost, cost, charge_user_id),
-            daemon=True,
-        ).start()
+        user = self._current_user_or_raise()
+        job = self._start_paid_job(
+            "motion_transfer", user, body, cost, "motion_transfer", _run_motion_transfer_job,
+            (image_url, video_url, prompt, wholesale_cost, cost), "web:motion_transfer",
+            duration_seconds=round(duration, 2),
+        )
         return self._send(202, job)
 
     def _quote_avatar(self, body):
@@ -2106,6 +2396,7 @@ class Handler(BaseHTTPRequestHandler):
         cost = round(rate * duration, 4)
         return self._send(200, {
             "duration_seconds": round(duration, 2), "rate": rate, "cost_usd": cost,
+            "pricing_version": PRICING_VERSION,
             "shown_as": f"{duration:.1f}s x ${rate}/s = ${cost}",
         })
 
@@ -2135,28 +2426,46 @@ class Handler(BaseHTTPRequestHandler):
                 f"The price changed to ${cost} since it was quoted. "
                 "Nothing was charged — re-confirm to continue."
             )
+        self._require_pricing_version(body)
 
-        owner, charge_user_id = self._require_funded_user(cost)
-
-        job = _new_job("avatar", owner, cost_usd=cost, duration_seconds=round(duration, 2))
-        threading.Thread(
-            target=_run_avatar_job,
-            args=(job["id"], image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost, charge_user_id),
-            daemon=True,
-        ).start()
+        user = self._current_user_or_raise()
+        job = self._start_paid_job(
+            "avatar", user, body, cost, "avatar", _run_avatar_job,
+            (image_url, audio_url, prompt, resolution, turbo, wholesale_cost, cost), "web:avatar",
+            duration_seconds=round(duration, 2),
+        )
         return self._send(202, job)
 
     # -- files -----------------------------------------------------------
 
     def _serve_media(self, rel):
         """Serve generated files out of work/. Path is resolved and confined
-        to work/ so a crafted URL cannot read elsewhere on disk."""
+        to work/ so a crafted URL cannot read elsewhere on disk -- and, in
+        multi-tenant mode, gated to the job's own owner or an explicitly
+        published gallery item (see _media_job_for_path): a job's real
+        output URL isn't guessable in a way that matters (job ids are
+        random), but a signed-in user's own browser history / shared link
+        shouldn't rely on that alone, and someone else's file must not be
+        readable just because its path is known.
+
+        Single-tenant mode (no Supabase configured) keeps the previous
+        open behaviour deliberately -- there's no concept of "another
+        tenant" to protect against there; _owner_id() already treats every
+        request as the same LOCAL_OWNER for job history too."""
         rel = urllib.parse.unquote(rel)
         if not re.fullmatch(r"[A-Za-z0-9_./-]+", rel or ""):
             return self._send(400, {"error": "Bad media path."})
         target = (WORK / rel).resolve()
         if not str(target).startswith(str(WORK.resolve()) + "/") or not target.is_file():
             return self._send(404, {"error": "Not found."})
+
+        if db.configured():
+            job = _media_job_for_path(rel)
+            if not job or not job.get("public"):
+                owner = self._owner_id()
+                if not job or not owner or job.get("owner_id") != owner:
+                    return self._send(404, {"error": "Not found."})
+
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         self._send(200, target.read_bytes(), ctype=ctype)
 
@@ -2194,6 +2503,7 @@ def main():
 
     _load_persisted()
     _load_persisted_topups()
+    _recover_orphaned_jobs()
 
     if not os.environ.get("FAL_KEY", "").strip():
         print("  WARNING: FAL_KEY is not set — the UI will load but generation will fail.")

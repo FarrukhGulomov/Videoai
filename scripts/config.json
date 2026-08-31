@@ -1,6 +1,9 @@
 {
   "_comment": "Model endpoints and prices. Verify prices against https://fal.ai/pricing before a rung-3 run; fal changes them without notice.",
 
+  "pricing_version": 1,
+  "_pricing_version_note": "Bump this integer any time a rate, markup, or pricing rule below actually changes. webapp/server.py's quote endpoints echo it back; the generate endpoints check it against a client-supplied pricing_version (when present) the same way they already check approved_cost -- a stale quote from before a bump is rejected with a clear 're-quote' error instead of silently running at whatever this process's current rate happens to be. Since CONFIG is loaded once per process (see factory.load_config()), this mainly guards a browser tab left open across a redeploy, not a live race within one process's lifetime.",
+
   "pricing": {
     "customer_markup_multiplier": 1.12,
     "_note": "Applied ONLY in webapp/server.py, to every customer-facing price: quotes, the confirm dialog, credit-balance charges, and (since mcp/server.py talks to the webapp's own API rather than reading this file) MCP tool output too. scripts/factory.py's CLI always shows the real wholesale fal.ai rate unchanged -- it's the operator's own tool against their own fal.ai balance, not a customer-facing surface, so there's nothing to mark up there. work/generations.jsonl (the internal spend ledger) always logs both numbers -- cost_usd stays the real wholesale spend (unchanged meaning from before this existed), customer_charged_usd is what was actually billed -- so margin is visible internally without touching this file. 1.12 (a 12% margin) is a deliberately thin, growth-stage price -- picked so the product can compete on price against Higgsfield/Montage.ai while the user base is small, not to maximize margin per video yet. Change this one number to change profit margin; nothing else needs editing."

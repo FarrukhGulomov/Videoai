@@ -61,6 +61,20 @@ def _request(method, url, headers, body=None, timeout=15):
         raise SupabaseError(f"Could not reach Supabase: {exc.reason}") from None
 
 
+def rpc(function_name, args, use_service_key=True):
+    """Call a Postgres function exposed by PostgREST at /rest/v1/rpc/<name>.
+    Service-role by default -- every function this project defines under
+    this path (see 04-atomic-credits.sql) is SECURITY DEFINER and mutates
+    a balance, so it's never meant to be reachable with a user's own
+    token."""
+    key = _service_key() if use_service_key else _anon_key()
+    if use_service_key and not key:
+        raise SupabaseError("SUPABASE_SERVICE_ROLE_KEY is not set -- cannot call a billing function.")
+    url = f"{_base_url()}/rest/v1/rpc/{function_name}"
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    return _request("POST", url, headers, args)
+
+
 # ---------------------------------------------------------------- auth
 
 def sign_up(email, password):
@@ -92,53 +106,20 @@ def get_user(access_token):
 # ------------------------------------------------------------- credits
 
 def get_balance(user_id, access_token):
-    """Read the caller's own balance under their own RLS-scoped token --
-    the 'own credit balance' select policy in 02-multiuser-schema.sql is
-    what makes this safe to call with a user token instead of the service
-    role key. No row yet (nothing granted) reads as a balance of 0."""
-    url = f"{_base_url()}/rest/v1/credits?user_id=eq.{user_id}&select=balance_usd"
+    """Read the caller's own *spendable* balance under their own
+    RLS-scoped token -- balance_usd minus whatever is currently held by
+    an in-flight reservation (see 04-atomic-credits.sql / webapp/ledger.py),
+    since money tied up in a reservation isn't available to spend again
+    until it's captured or released. The 'own credit balance' select
+    policy in 02-multiuser-schema.sql is what makes this safe to call
+    with a user token instead of the service role key. No row yet
+    (nothing granted) reads as a balance of 0."""
+    url = f"{_base_url()}/rest/v1/credits?user_id=eq.{user_id}&select=balance_usd,reserved_usd"
     headers = {"apikey": _anon_key(), "Authorization": f"Bearer {access_token}"}
     rows = _request("GET", url, headers)
     if rows:
-        return float(rows[0]["balance_usd"])
+        return float(rows[0]["balance_usd"]) - float(rows[0].get("reserved_usd") or 0)
     return 0.0
-
-
-def record_spend(user_id, delta_usd, note=None):
-    """Move a user's balance by delta_usd (negative to spend, positive to
-    grant/refund) and append the immutable ledger row that explains why.
-    Requires the service role key: credits/credit_ledger carry no
-    client-writable RLS policy by design, so this is the only path able
-    to move a balance at all.
-
-    Not atomic across the read-then-write below -- acceptable for an MVP
-    with admin-driven top-ups and low concurrency per user; a Postgres
-    function (SECURITY DEFINER, single round trip) is the fix if this
-    becomes a real race in practice."""
-    key = _service_key()
-    if not key:
-        raise SupabaseError("SUPABASE_SERVICE_ROLE_KEY is not set -- cannot record a credit change.")
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-
-    ledger_url = f"{_base_url()}/rest/v1/credit_ledger"
-    reason = "manual_topup" if delta_usd > 0 else "generation"
-    _request("POST", ledger_url, headers, {
-        "user_id": user_id, "delta_usd": delta_usd, "reason": reason, "note": note,
-    })
-
-    balance_url = f"{_base_url()}/rest/v1/credits?user_id=eq.{user_id}&select=balance_usd"
-    rows = _request("GET", balance_url, headers)
-    current = float(rows[0]["balance_usd"]) if rows else 0.0
-    new_balance = max(0.0, round(current + delta_usd, 4))
-
-    upsert_url = f"{_base_url()}/rest/v1/credits?on_conflict=user_id"
-    upsert_headers = dict(headers, Prefer="resolution=merge-duplicates")
-    _request("POST", upsert_url, upsert_headers, {"user_id": user_id, "balance_usd": new_balance})
-    return new_balance
 
 
 # ---------------------------------------------------------- characters
